@@ -1,2 +1,2 @@
 # TransPaper
-Translate PDF in English to Japanese
+英語のPDFを日本語に翻訳します
