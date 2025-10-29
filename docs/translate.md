@@ -33,6 +33,11 @@ translated = transmod.translate_huggingface(
 )
 ```
 
+## openAI形式のAPIを使用する
+<!-- TODO：実装 -->
+LLM APIを用いた翻訳も実装を予定しています。
+groqAPIは無料で使えるので、早く実装したいなと思っています。
+
 ## 出力ディレクトリ構造
 
 ```

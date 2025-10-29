@@ -30,7 +30,6 @@ function up() {
   if [ -f ${ENV_FILE} ]; then
     export $(grep -v '^#' ${ENV_FILE} | xargs)
   fi
-  echo "Starting container with GPU: ${GPU}"
   docker compose -f ${COMPOSE} up -d
 }
 
