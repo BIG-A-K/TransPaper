@@ -11,7 +11,9 @@ DEEPL_API={DEEPL_APIの鍵} uv run main.py --input hoge.pdf (--output translated
 
 
 ## 開発者へ
-Documentを`doc/`以下に書いてあります。適宜参照してください。
+Documentを`docs/`以下に書いてあります。適宜参照してください。
+開発者向けのドキュメントは`docs/development.md`です。適宜参照してください。
+
 また、`AGENTS.md`を用意してあります。いい感じに修正して使ってください。
 
 codexなどのAgentが変に暴れると怖いのでDocker環境を用意してあります。

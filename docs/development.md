@@ -14,7 +14,7 @@ make ci
 ```
 を実行しておいてください。
 中身では`wrkflw`というrust製のgithub actionを実行してくれるツールを使用しています。
-`cargo install wrkflw`でいけます。
+インストールするなら`cargo install wrkflw`です。
 
 # 環境条件
 - linux or mac OS
@@ -35,6 +35,7 @@ make ci
 
 - pythonで開発する
 - モジュール化で機能を分割する
+    - モジュールの説明は`docs/モジュール名.md`で記述する
 
 ## 非機能要求
 - メモリ：16GB以下(localhostで使う場合)
