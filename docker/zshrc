@@ -1,0 +1,119 @@
+########################################
+# 環境変数
+export LSCOLORS=gxfxcxdxbxegedabagacad
+
+#uv
+export UV_CACHE_DIR="/tmp/uv_cache"
+
+# history
+HISTSIZE=10000
+SAVEHIST=10000
+alias history='history 1'
+
+
+setopt EXTENDED_HISTORY     # 履歴にタイムスタンプを記録
+setopt HIST_IGNORE_DUPS     # 直前のコマンドが同じ場合は記録しない
+setopt HIST_IGNORE_ALL_DUPS # 履歴全体で重複するコマンドを記録しない
+setopt APPEND_HISTORY       # 履歴ファイルを上書きせず追記する
+setopt INC_APPEND_HISTORY   # コマンド実行の都度、履歴を書き込む
+setopt SHARE_HISTORY        # 複数のシェルで履歴を共有する
+
+
+# 色を使用出来るようにする
+autoload -Uz colors
+colors
+
+# Set up the prompt
+autoload -Uz promptinit
+promptinit
+# prompt adam2
+PROMPT="%U%F{1}(%n@%m)%u%f:%U%F{1}(%~)%u%f$ "
+RPROMPT="%F{2}return = %?"
+
+# Use emacs keybindings even if our EDITOR is set to vi
+bindkey -e
+
+
+# コマンドのスペルを訂正
+setopt correct
+# ビープ音を鳴らさない
+setopt no_beep
+
+# Use modern completion system
+## 補完機能を有効にする
+autoload -Uz compinit
+compinit -u
+if [ -e /usr/local/share/zsh-completions ]; then
+  fpath=(/usr/local/share/zsh-completions $fpath)
+fi
+## 補完で小文字でも大文字にマッチさせる
+zstyle ':completion:*' matcher-list 'm:{a-z}={A-Z}'
+## 補完候補を詰めて表示
+setopt list_packed
+## 補完候補一覧をカラー表示
+zstyle ':completion:*' list-colors ''
+
+zstyle ':completion:*' auto-description 'specify: %d'
+zstyle ':completion:*' completer _expand _complete _correct _approximate
+zstyle ':completion:*' format 'Completing %d'
+zstyle ':completion:*' group-name ''
+zstyle ':completion:*' menu select=2
+eval "$(dircolors -b)"
+zstyle ':completion:*:default' list-colors ${(s.:.)LS_COLORS}
+zstyle ':completion:*' list-colors 'di=34' 'ln=35' 'so=32' 'ex=31' 'bd=46;34' 'cd=43;34'
+zstyle ':completion:*' list-prompt %SAt %p: Hit TAB for more, or the character to insert%s
+zstyle ':completion:*' matcher-list '' 'm:{a-z}={A-Z}' 'm:{a-zA-Z}={A-Za-z}' 'r:|[._-]=* r:|=* l:|=*'
+zstyle ':completion:*' menu select=long
+zstyle ':completion:*' select-prompt %SScrolling active: current selection at %p%s
+zstyle ':completion:*' use-compctl false
+zstyle ':completion:*' verbose true
+
+zstyle ':completion:*:*:kill:*:processes' list-colors '=(#b) #([0-9]#)*=0=01;31'
+zstyle ':completion:*:kill:*' command 'ps -u $USER -o pid,%cpu,tty,cputime,cmd'
+
+
+# some more ls aliases
+autoload -U compinit
+compinit
+
+export PATH="$PATH:/home/yagi/.local/bin"
+export LSCOLORS=exfxcxdxbxegedabagacad
+export LS_COLORS='di=34:ln=35:so=32:pi=33:ex=31:bd=46;34:cd=43;34:su=41;30:sg=46;30:tw=42;30:ow=43;30'
+
+# ctrl + 矢印キーを使う
+bindkey ";3C" forward-word
+bindkey ";3D" backward-word
+bindkey ";5C" forward-word
+bindkey ";5D" backward-word
+bindkey ";5A" up-line-or-history
+bindkey ";5B" down-line-or-history
+bindkey '5~' kill-word
+bindkey '^H' backward-kill-word
+
+alias ls="ls --color=auto"
+alias l='ls -GF --color=auto'
+alias la='ls -A --color=auto'
+alias ll='ls -lA --color=auto'
+
+# ご覧の通り
+alias egrep='egrep --color=auto'
+alias fgrep='fgrep --color=auto'
+alias grep='grep --color=auto'
+alias sl="ls"
+alias ssh="ssh -XY"
+alias last="last |less" 
+
+
+# git関連
+alias gt="git tree"
+alias gs="git status"
+alias git_config="git config --local user.name yagi; git config --local user.email yagi@cs.meiji.ac.jp"
+alias ga="git add"
+alias gb="git branch"
+alias gc="git commit"
+alias gcm="git commit -m"
+alias gpush="git push"
+alias gpull="git pull"
+alias gdiff="git diff"
+
+

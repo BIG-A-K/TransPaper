@@ -1,0 +1,46 @@
+# 開発環境
+- m4 mac 16GB
+- Python 3.12
+  - `uv run`で実行
+- uvで管理
+  - モジュールを追加する際は`uv add`を使用する
+- チャットは日本語
+-  生成したコードの使い方や仕様などは`docs/{module名}.md`で作成する
+- `README.md`に仕様等が書いてある
+
+
+## 禁止事項
+- uv pipの使用
+  - `uv pip list`なら使っても良い。(普通に`pyproject.toml`を見てもらっても良い)
+- rm コマンドの使用
+  - 代わりにgomi/以下にmvすること
+
+# コード規則
+```
+uv run main.py --input {pdf}.pdf (--output {pdf(ja)}.pdf) (--mdoel {モデル名("deepl"など)})
+```
+でja->enにする。
+test用に`./attention_is_all_you_need.pdf`を用意してあるので、それで検証する
+
+`main.py`が`common/`以下のモジュールをimportする形で設計する
+
+
+# ディレクトリ構造
+<!-- ここを適宜更新しておいてください -->
+```
+ .
+├──  AGENT.md
+├──  claude.md
+├──  common #mainから呼び出すコード群
+│   └──  seg.py
+├──  docker # 開発用docker環境の定義
+│   ├──  compose.yml
+│   ├──  container.sh
+│   └──  Dockerfile
+├──  docs # モジュールの説明など
+├──  Makefile # 開発用docker環境等
+├──  out # ここにtmpファイルを入れる
+├──  pyproject.toml
+├── 󰂺 README.md
+└──  uv.lock
+```

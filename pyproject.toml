@@ -1,0 +1,90 @@
+[project]
+name = "transpaper"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "click>=8.3.0",
+    "doclayout-yolo>=0.0.4",
+    "huggingface-hub>=1.0.1",
+    "loguru>=0.7.3",
+    "opencv-python>=4.12.0.88",
+    "pymupdf>=1.26.5",
+    "tqdm>=4.67.1",
+    "ultralytics>=8.0.196",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.14.2",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+exclude = [".git", ".ruff_cache", ".venv", ".vscode", "scripts", "db"]
+
+[tool.ruff.lint]
+preview = true
+select = [
+    "ANN", # type annotation
+    "B",   # flake8-bugbear
+    "D",   # pydocstyle
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "I",   # isort
+    "PTH", # use `pathlib.Path` instead of `os.path`
+    "RUF", # ruff specific rules
+    "SIM", # flake8-simplify
+    "UP",  # pyupgrade
+    "W",   # pycodestyle warnings
+]
+ignore = [
+    'E501',  #Line too long  
+    "ANN001",
+    "ANN201", 
+    "ANN202", 
+    "ANN401", # Checks that function arguments are annotated with a more specific type than Any.
+    "B007",   # Unused loop variable
+    "B008",   # Function call in default argument
+    "B905",   # `zip()` without `strict=True`
+    "COM812", # Missing trailing comma
+    "COM819", # Trailing comma prohibited
+    "D1",     # Missing docstring in public module, class, function, or method
+    "D200",   # One-line docstring should fit on one line
+    "D203",   # One blank line required before class docstring (ignored because D211 is prioritized in pydocstyle convention 'google')
+    "D205",   # 1 blank line required between summary line and description
+    "D212",   # Multi-line docstring summary should start at the first line
+    "D213",   # Multi-line docstring summary should start at the second line
+    "D400",   # First line of docstring should end with a period
+    "D415",   # First line of docstring should end with punctuation (period, question mark, or exclamation point)
+    "E114",   # Indentation is not a multiple of four (comment)
+    "G004",   # Logging statement uses f-string
+    "ISC001", # Implicit string concatenation on a single line
+    "ISC002", # Implicit string concatenation on multiple lines
+    "PTH123", # `open()` should be replaced by `Path.open()`
+    "Q000",   # Single quotes found when double quotes are preferred
+    "Q001",   # Single quotes found when double quotes are preferred for multi-line strings
+    "Q002",   # Single quotes found when double quotes are preferred for docstrings
+    "RUF002", # Checks for ambiguous Unicode characters in docstrings.
+    "RUF003", # Checks for ambiguous Unicode characters in comments.
+    "RUF029", 
+    "SIM105", # try-except-pass blocks that can be replaced with the contextlib.suppress context manager.
+    "SIM108", # Use ternary operator instead of `if`-`else`-block
+    "SIM116", # Use a dictionary instead of consecutive `if` statements
+]
+unfixable = [
+    "F401", # unused import
+    "F841", # unused variable
+]
+
+[tool.ruff.lint.per-file-ignores]
+# ファイルごとのエラー除外
+"__init__.py" = ["F401"] # __all__の定義を無視する
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.isort]
+known-third-party = ["fastapi", "pydantic", "starlette"]

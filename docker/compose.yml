@@ -1,0 +1,24 @@
+services:
+  agent_container:
+    hostname: ${USER}/${CONTAINER_NAME}
+    image: transpaper/${CONTAINER_NAME}:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ${USER}-${CONTAINER_NAME}
+    env_file: ../.env
+    network_mode: host
+    environment:
+      - CONTAINER_NAME=${CONTAINER_NAME}
+      - USER=${USER}
+      - GROUP=${GROUP}
+      - UID=${USER_ID}
+      - GID=${GROUP_ID}
+    init: true
+    command: ["sleep", "infinity"]
+    volumes:
+      - ../:/home/${USER}/TransPaper:rw
+      - ./zshrc:/home/${USER}/.zshrc:ro
+      # Persist Codex CLI auth/config across container restarts
+      - ${HOME}/.config/codex:/home/${USER}/.config/codex:rw
+      - ${HOME}/.codex:/home/${USER}/.codex:rw

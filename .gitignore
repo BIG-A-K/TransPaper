@@ -1,0 +1,23 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+out/
+.venv
+.env
+gomi/
+models/
+scripts/
+*.pt
+
+# PDF files
+*.pdf
+*.png
+*.jpg
