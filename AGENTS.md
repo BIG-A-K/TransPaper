@@ -14,6 +14,9 @@
   - `uv pip list`なら使っても良い。(普通に`pyproject.toml`を見てもらっても良い)
 - rm コマンドの使用
   - 代わりにgomi/以下にmvすること
+- Makefileの編集
+- `docker/`以下の編集
+  - 開発用docker環境を変更したい場合は`AGENTS.md`に記載して相談すること
 
 # コード規則
 ```

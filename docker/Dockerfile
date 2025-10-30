@@ -57,7 +57,7 @@ RUN npm install -g @openai/codex
 
 RUN deluser ubuntu
 
-# RUN addgroup --gid ${GID} ${GROUP}
+RUN addgroup --gid ${GID} ${GROUP}
 RUN useradd -ms /bin/zsh -u ${UID} -g ${GID} -G sudo ${USER} &&\
     echo ${USER}:${USER} | chpasswd
 

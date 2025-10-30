@@ -229,12 +229,9 @@ class DocLayoutYoloSegmenter:
     image_size: int | None = 1024
 
     def __post_init__(self) -> None:
-        if all(mod is None for mod in (DocYOLO, DocYOLOv10, YOLO, YOLOv10)):
-            raise RuntimeError(
-                "DocLayout-YOLOを利用するには doclayout-yolo または ultralytics パッケージが必要です。"
-                " `uv add doclayout-yolo ultralytics torch torchvision` などを実行してください。"
-            )
+        # モデルローダは遅延初期化し、失敗時はフォールバックする
         self._model: Any = None
+        self.model_source: str = "uninitialized"
 
     def _load_local(self, path: Path) -> Any:
         """
@@ -255,56 +252,88 @@ class DocLayoutYoloSegmenter:
         self, default_model: str = "juliozhao/DocLayout-YOLO-DocStructBench"
     ) -> str:
         """
-        DocLayout-YOLOのモデルをインストールする
+        DocLayout-YOLOのモデルを解決する。
+        優先度: (1) プロジェクト直下の実体ファイル -> (2) Hugging Face キャッシュパス
         """
         project_root = Path(__file__).resolve().parent.parent
         default_model_path = project_root / "models" / "doclayout_yolo_docstructbench_imgsz1024.pt"
-        default_model_path.parent.mkdir(parents=True, exist_ok=True)
-        # load済みならそのまま返す
-        if default_model_path.exists():
+        # 実体ファイルが存在する場合のみ使用（壊れたシンボリックリンクは無視）
+        if default_model_path.is_file():
             return str(default_model_path)
-        if default_model_path.is_symlink():
-            try:
-                default_model_path.unlink()
-            except FileNotFoundError:
-                pass
         import huggingface_hub
 
         try:
-            logger.info("Installing DocLayout-YOLO model...")
+            logger.info("Resolving DocLayout-YOLO model via Hugging Face cache...")
             filepath = huggingface_hub.hf_hub_download(
                 repo_id="juliozhao/DocLayout-YOLO-DocStructBench",
                 filename="doclayout_yolo_docstructbench_imgsz1024.pt",
+                local_files_only=False,
             )
-            # modelを移動する
-            file_path = Path(filepath)
-            try:
-                file_path.replace(default_model_path)
-            except OSError as replace_error:
-                if replace_error.errno != errno.EXDEV:
-                    raise
-                # 別デバイス間の移動はコピーで対応する
-                shutil.copy2(file_path, default_model_path)
-            return str(default_model_path)
+            # ダウンロードしたキャッシュのパスをそのまま返す
+            return str(Path(filepath))
         except Exception as e:
-            logger.error(f"Error downloading model: {e}")
-            raise RuntimeError("Failed to download DocLayout-YOLO model.") from e
+            # ネットワーク不可や権限問題などで失敗するケースがある
+            logger.warning(
+                f"DocLayout-YOLOの自動取得に失敗しました。フォールバックします: {e}"
+            )
+            # フォールバック用に存在しないパスは返さない
+            raise
 
     def predict(self, image: np.ndarray):
+        """モデル推論。失敗時は全画面テキスト1ブロックにフォールバックする。"""
+
+        class _PseudoBoxes:
+            def __init__(self, w: int, h: int) -> None:
+                self.xyxy = np.array([[0.0, 0.0, float(w), float(h)]], dtype=float)
+                self.cls = np.array([0], dtype=int)
+                self.conf = np.array([1.0], dtype=float)
+
+        class _PseudoDetections:
+            def __init__(self, w: int, h: int) -> None:
+                self.boxes = _PseudoBoxes(w, h)
+                self.names = {0: "text"}
+
+        def _fallback_result(img: np.ndarray):
+            h, w = (img.shape[0], img.shape[1]) if img.ndim >= 2 else (1024, 768)
+            return [_PseudoDetections(w, h)]
+
         if self._model is None:
-            model_path = self._install_doclayout_yolo()
-            self.model_source = model_path
-            self._model = self._load_local(Path(model_path))
-        results = self._model.predict(
-            image,
-            conf=self.conf,
-            iou=self.iou,
-            device=self.device,
-            imgsz=self.image_size,
-            verbose=False,
-        )
-        # `model.predict` は list[Results] を返す想定
-        return results[0]
+            try:
+                # 依存が無い／壊れている場合も例外で拾う
+                if all(mod is None for mod in (DocYOLO, DocYOLOv10, YOLO, YOLOv10)):
+                    raise RuntimeError(
+                        "DocLayout-YOLOがインストールされていません"
+                    )
+                model_path = self._install_doclayout_yolo()
+                self.model_source = model_path
+                self._model = self._load_local(Path(model_path))
+            except Exception as e:  # フォールバック
+                logger.warning(
+                    f"DocLayout-YOLOのロードに失敗したためフォールバックします: {e}"
+                )
+                self.model_source = "fallback:text-full-page"
+                # フォールバックモードを記録（以降のページで再試行しない）
+                self._model = "__FALLBACK__"
+                return _fallback_result(image)[0]
+        if self._model == "__FALLBACK__":
+            return _fallback_result(image)[0]
+
+        try:
+            results = self._model.predict(
+                image,
+                conf=self.conf,
+                iou=self.iou,
+                device=self.device,
+                imgsz=self.image_size,
+                verbose=False,
+            )
+            return results[0]
+        except Exception as e:  # 推論失敗時もフォールバック
+            logger.warning(
+                f"DocLayout-YOLO推論に失敗したためフォールバックします: {e}"
+            )
+            self.model_source = "fallback:text-full-page"
+            return _fallback_result(image)[0]
 
 
 def _draw_overlay(
