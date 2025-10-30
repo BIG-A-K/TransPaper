@@ -29,6 +29,7 @@ lint:
 
 ci: lint
 	wrkflw validate	
+	# wrkflw run --verbose --runtime docker .github/workflows/format.yml TODO: enable when wrkflw supports fix mode
 
 test:
 	wget https://arxiv.org/pdf/1706.03762 -O attention_is_all_you_need.pdf

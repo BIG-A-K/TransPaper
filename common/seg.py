@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import argparse
-import errno
 import json
 import os
-import shutil
 import sys
 from collections import Counter
 from collections.abc import Sequence
@@ -273,9 +271,7 @@ class DocLayoutYoloSegmenter:
             return str(Path(filepath))
         except Exception as e:
             # ネットワーク不可や権限問題などで失敗するケースがある
-            logger.warning(
-                f"DocLayout-YOLOの自動取得に失敗しました。フォールバックします: {e}"
-            )
+            logger.warning(f"DocLayout-YOLOの自動取得に失敗しました。フォールバックします: {e}")
             # フォールバック用に存在しないパスは返さない
             raise
 
@@ -301,16 +297,12 @@ class DocLayoutYoloSegmenter:
             try:
                 # 依存が無い／壊れている場合も例外で拾う
                 if all(mod is None for mod in (DocYOLO, DocYOLOv10, YOLO, YOLOv10)):
-                    raise RuntimeError(
-                        "DocLayout-YOLOがインストールされていません"
-                    )
+                    raise RuntimeError("DocLayout-YOLOがインストールされていません")
                 model_path = self._install_doclayout_yolo()
                 self.model_source = model_path
                 self._model = self._load_local(Path(model_path))
             except Exception as e:  # フォールバック
-                logger.warning(
-                    f"DocLayout-YOLOのロードに失敗したためフォールバックします: {e}"
-                )
+                logger.warning(f"DocLayout-YOLOのロードに失敗したためフォールバックします: {e}")
                 self.model_source = "fallback:text-full-page"
                 # フォールバックモードを記録（以降のページで再試行しない）
                 self._model = "__FALLBACK__"
@@ -329,9 +321,7 @@ class DocLayoutYoloSegmenter:
             )
             return results[0]
         except Exception as e:  # 推論失敗時もフォールバック
-            logger.warning(
-                f"DocLayout-YOLO推論に失敗したためフォールバックします: {e}"
-            )
+            logger.warning(f"DocLayout-YOLO推論に失敗したためフォールバックします: {e}")
             self.model_source = "fallback:text-full-page"
             return _fallback_result(image)[0]
 
