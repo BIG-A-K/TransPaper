@@ -55,6 +55,9 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
 # install codex
 RUN npm install -g @openai/codex
 
+# install claude code
+RUN curl -fsSL https://claude.ai/install.sh | bash
+
 RUN deluser ubuntu
 
 RUN addgroup --gid ${GID} ${GROUP}
