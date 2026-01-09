@@ -52,6 +52,9 @@ ENV UV_LINK_MODE=copy
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
     apt-get install -y nodejs
 
+# install codex
+RUN npm install -g @openai/codex
+
 RUN deluser ubuntu
 
 RUN addgroup --gid ${GID} ${GROUP}
@@ -62,8 +65,6 @@ USER ${USER}
 WORKDIR /home/${USER}
 RUN mkdir -p /home/${USER}/.config
 
-# install codex
-RUN npm install -g @openai/codex
 
 # install claude code
 RUN curl -fsSL https://claude.ai/install.sh | bash
