@@ -39,9 +39,39 @@ print(result.page_count, result.segment_count, result.warning_count)
 
 `ComposeOptions` ではフォントや最小フォントサイズ、行間、警告表示件数などを調整できます。`cover_original=True` で原文テキストを削除（既定値）、`False` で原文を保持します。`warning_count` は全警告件数、`warnings` は上位 `max_logged_warnings` 件のみが格納されます。
 
+## 比較PDF作成
+
+`create_comparison_pdf` 関数を使用すると、元のPDFと翻訳後のPDFを交互に配置した比較用PDFを作成できます。
+
+### CLI経由での使用
+
+```bash
+uv run main.py --input file.pdf --compare
+# または短縮形
+uv run main.py -i file.pdf -c
+```
+
+`--compare`/`-c` オプションを指定すると、ページ順が「元→翻訳→元→翻訳...」となる比較PDFが生成されます。デフォルトのファイル名は `translated_{ファイル名}_compare.pdf` になります。
+
+### モジュールを直接呼び出す
+
+```python
+from common import compose
+
+comparison_path = compose.create_comparison_pdf(
+    original_pdf="attention_is_all_you_need.pdf",
+    translated_pdf="translated_attention_is_all_you_need.pdf",
+    output_pdf="comparison.pdf",
+)
+print(f"Comparison PDF created: {comparison_path}")
+```
+
+この関数は元のPDFと翻訳後のPDFのページ数が一致していることを確認し、不一致の場合はエラーを発生させます。
+
 ## 注意点
 
 - ORIGINAL PDF をベースとして複製し、既定ではテキスト層のみ削除した後に訳文を描画します。画像や図表は原文のまま残ります。
 - `math` セグメントは原稿PDFから該当領域をクリップした画像として再配置されるため、`cover_original=True` でも数式が欠落しません（翻訳対象には含まれません）。
 - 行ボックスからはみ出す長さの訳文は自動的にフォントサイズを縮小します。それでも収まらない場合は一部が切り落とされ、警告が発生します。
 - 日本語描画にはCJK対応フォントが必要です。システムにインストール済みの`Noto Sans CJK`系フォントなどを指定してください。
+- 比較PDF作成時は、元のPDFと翻訳後のPDFのページ数が完全に一致している必要があります。

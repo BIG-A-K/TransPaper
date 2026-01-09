@@ -333,3 +333,53 @@ def _expand_rect(rect: fitz.Rect, padding: float, bounds: fitz.Rect) -> fitz.Rec
     expanded.x1 = min(bounds.x1, expanded.x1)
     expanded.y1 = min(bounds.y1, expanded.y1)
     return expanded
+
+
+def create_comparison_pdf(
+    original_pdf: str | Path,
+    translated_pdf: str | Path,
+    output_pdf: str | Path,
+) -> Path:
+    """
+    元のPDFと翻訳後のPDFを交互に配置した比較用PDFを作成する。
+
+    Args:
+        original_pdf: 元のPDFファイルパス
+        translated_pdf: 翻訳後のPDFファイルパス
+        output_pdf: 出力PDFファイルパス
+
+    Returns:
+        出力PDFのPath
+    """
+    original_path = Path(original_pdf)
+    translated_path = Path(translated_pdf)
+    output_path = Path(output_pdf)
+
+    if not original_path.exists():
+        raise FileNotFoundError(f"元のPDFが見つかりません: {original_path}")
+    if not translated_path.exists():
+        raise FileNotFoundError(f"翻訳後のPDFが見つかりません: {translated_path}")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with fitz.open(original_path) as orig_doc, fitz.open(translated_path) as trans_doc:
+        compare_doc = fitz.open()
+        try:
+            # 元のPDFと翻訳後のPDFのページ数が同じであることを確認
+            if len(orig_doc) != len(trans_doc):
+                raise ValueError(
+                    f"PDFのページ数が一致しません (元: {len(orig_doc)}, 翻訳後: {len(trans_doc)})"
+                )
+
+            # 各ページを元→翻訳→元→翻訳...の順で挿入
+            for page_idx in range(len(orig_doc)):
+                # 元のページを挿入
+                compare_doc.insert_pdf(orig_doc, from_page=page_idx, to_page=page_idx)
+                # 翻訳後のページを挿入
+                compare_doc.insert_pdf(trans_doc, from_page=page_idx, to_page=page_idx)
+
+            compare_doc.save(output_path)
+        finally:
+            compare_doc.close()
+
+    return output_path
