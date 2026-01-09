@@ -76,7 +76,6 @@ zstyle ':completion:*:kill:*' command 'ps -u $USER -o pid,%cpu,tty,cputime,cmd'
 autoload -U compinit
 compinit
 
-export PATH="$PATH:/home/yagi/.local/bin"
 export LSCOLORS=exfxcxdxbxegedabagacad
 export LS_COLORS='di=34:ln=35:so=32:pi=33:ex=31:bd=46;34:cd=43;34:su=41;30:sg=46;30:tw=42;30:ow=43;30'
 
@@ -100,20 +99,4 @@ alias egrep='egrep --color=auto'
 alias fgrep='fgrep --color=auto'
 alias grep='grep --color=auto'
 alias sl="ls"
-alias ssh="ssh -XY"
-alias last="last |less" 
-
-
-# git関連
-alias gt="git tree"
-alias gs="git status"
-alias git_config="git config --local user.name yagi; git config --local user.email yagi@cs.meiji.ac.jp"
-alias ga="git add"
-alias gb="git branch"
-alias gc="git commit"
-alias gcm="git commit -m"
-alias gpush="git push"
-alias gpull="git pull"
-alias gdiff="git diff"
-
 

@@ -9,6 +9,15 @@ DEEPL_API={DEEPL_APIの鍵} uv run main.py --input hoge.pdf (--output translated
 
 `-m,--model`オプションで、使いたいモデルの変更ができるようにしてあります。
 
+### 比較PDF作成
+元のPDFと翻訳後のPDFを見開きで比較したい場合は、`--compare`または`-c`オプションを使用してください：
+
+```sh
+DEEPL_API={DEEPL_APIの鍵} uv run main.py --input hoge.pdf --compare
+```
+
+このオプションを指定すると、「元のページ→翻訳後のページ→元のページ→翻訳後のページ...」という順序で配置された比較用PDFが生成されます。デフォルトのファイル名は`translated_{ファイル名}_compare.pdf`になります。
+
 
 ## 開発者へ
 Documentを`docs/`以下に書いてあります。適宜参照してください。
