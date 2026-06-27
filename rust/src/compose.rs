@@ -13,8 +13,7 @@ const MIN_FONT_SIZE: f32 = 5.5;
 const MAX_FONT_SIZE: f32 = 28.0;
 const COVER_PADDING: f32 = 1.2;
 const LINE_SPACING: f32 = 1.05;
-pub const DEDUP_ENABLED: bool = true;
-pub const DEDUP_IOS_THRESHOLD: f32 = 0.6;
+const DEDUP_IOS_THRESHOLD: f32 = 0.6;
 
 pub struct ComposeResult {
     pub output_path: std::path::PathBuf,
@@ -55,22 +54,7 @@ pub fn compose_pdf(
             }
         };
 
-        // Collect text/caption bboxes to limit redaction scope
-        let text_rects: Vec<Rect> = entry
-            .segments
-            .iter()
-            .filter(|s| s.seg_type == "text" || s.seg_type == "caption")
-            .filter(|s| s.translated_text.as_ref().map(|t| !t.trim().is_empty()).unwrap_or(false))
-            .map(|s| {
-                let (x0, y0, x1, y1) = s.bbox;
-                Rect::new(x0 as f32, y0 as f32, x1 as f32, y1 as f32)
-            })
-            .collect();
-
-        // Strip original text only within text/caption regions
-        strip_page_text(&mut page, &text_rects, &mut warnings, page_number);
-
-        // Dedup overlapping text segments before placement (defensive against seg/translate over-detection)
+        // Dedup BEFORE redaction so dropped segments don't leave blank gaps
         let dropped: HashSet<usize> = if dedup_enabled {
             let page_bounds = page.bounds().unwrap_or(Rect::new(0.0, 0.0, 612.0, 792.0));
             let page_area = page_bounds.width() * page_bounds.height();
@@ -84,6 +68,23 @@ pub fn compose_pdf(
         } else {
             HashSet::new()
         };
+
+        // Collect text/caption bboxes to limit redaction scope (excluding dropped segments)
+        let text_rects: Vec<Rect> = entry
+            .segments
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !dropped.contains(i))
+            .filter(|(_, s)| s.seg_type == "text" || s.seg_type == "caption")
+            .filter(|(_, s)| s.translated_text.as_ref().map(|t| !t.trim().is_empty()).unwrap_or(false))
+            .map(|(_, s)| {
+                let (x0, y0, x1, y1) = s.bbox;
+                Rect::new(x0 as f32, y0 as f32, x1 as f32, y1 as f32)
+            })
+            .collect();
+
+        // Strip original text only within text/caption regions
+        strip_page_text(&mut page, &text_rects, &mut warnings, page_number);
 
         for (i, segment) in entry.segments.iter().enumerate() {
             if dropped.contains(&i) {
@@ -227,7 +228,7 @@ fn dedup_text_segments(
 
     let giant_area_threshold = page_area * 0.4; // ページ面積の40%超で巨大 bbox 扱い
 
-    // (idx, text_len, area) を収集。テキスト長は translated_text 優先、未設定なら source_text。
+    // (idx, text_len, area) を収集。テキスト長は translated_text の文字数。
     let mut candidates: Vec<(usize, usize, f32)> = Vec::new();
     for (idx, seg) in segments.iter().enumerate() {
         if !is_text_placement_target(seg) {
@@ -236,7 +237,6 @@ fn dedup_text_segments(
         let text_len = seg
             .translated_text
             .as_deref()
-            .or(seg.source_text.as_deref())
             .map(|s| s.chars().count())
             .unwrap_or(0);
         let bbox = seg.bbox;

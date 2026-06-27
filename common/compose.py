@@ -83,13 +83,13 @@ def compose_pdf(
                 page_rect = page.rect
                 segments = entry.get("segments") or []
                 src_page = src_doc[src_index]
-                if opts.cover_original:
-                    _strip_page_text(page, opts, record_warning)
                 if opts.dedup_enabled:
                     page_area = page_rect.width * page_rect.height
                     segments = _dedup_text_segments(
                         segments, opts, page_number, page_area, record_warning
                     )
+                if opts.cover_original:
+                    _strip_page_text(page, opts, record_warning)
                 for segment in segments:
                     seg_type = segment.get("type")
                     if opts.target_types and seg_type not in opts.target_types:
@@ -239,13 +239,10 @@ def _is_text_placement_target(segment: Mapping[str, object], opts: ComposeOption
 
 
 def _rect_intersection_area(a: fitz.Rect, b: fitz.Rect) -> float:
-    x0 = max(a.x0, b.x0)
-    y0 = max(a.y0, b.y0)
-    x1 = min(a.x1, b.x1)
-    y1 = min(a.y1, b.y1)
-    if x1 <= x0 or y1 <= y0:
+    inter = a & b
+    if inter.is_empty:
         return 0.0
-    return (x1 - x0) * (y1 - y0)
+    return inter.width * inter.height
 
 
 def _dedup_text_segments(
@@ -274,15 +271,13 @@ def _dedup_text_segments(
     giant_area_threshold = page_area * 0.4  # ページ面積の40%超で巨大 bbox 扱い
 
     candidates: list[tuple[int, int, float]] = []  # (idx, text_len, area)
-    is_target = [False] * len(segments)
     for idx, seg in enumerate(segments):
         if not _is_text_placement_target(seg, opts):
             continue
         bbox = seg.get("bbox")
         if not bbox or len(bbox) != 4:
             continue
-        is_target[idx] = True
-        text_len = len(str(seg.get("translated_text") or seg.get("source_text") or ""))
+        text_len = len(seg.get("translated_text") or "")
         rect_tmp = fitz.Rect(bbox)
         area_tmp = rect_tmp.width * rect_tmp.height
         candidates.append((idx, text_len, area_tmp))
@@ -322,9 +317,7 @@ def _dedup_text_segments(
         return list(segments)
 
     dropped_set = {d[0] for d in dropped}
-    result = [
-        seg for idx, seg in enumerate(segments) if not (is_target[idx] and idx in dropped_set)
-    ]
+    result = [seg for idx, seg in enumerate(segments) if idx not in dropped_set]
     for dropped_idx, kept_idx in dropped:
         record_warning(
             f"重複セグメントを間引きました (page={page_number}, "

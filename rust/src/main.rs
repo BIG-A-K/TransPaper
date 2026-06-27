@@ -64,7 +64,7 @@ fn main() -> anyhow::Result<()> {
         .input
         .ok_or_else(|| anyhow::anyhow!("--input is required"))?;
 
-    let dedup_enabled = compose::DEDUP_ENABLED && !cli.no_dedup;
+    let dedup_enabled = !cli.no_dedup;
     run_pipeline(&input, cli.output, &cli.model, cli.compare, dedup_enabled)
 }
 
