@@ -108,10 +108,8 @@ result = compose.compose_pdf(
 
 Rust版（`rust/src/compose.rs`）も Python版と同じ重複間引きロジックを備えます（機能パリティ）。ただし設定方法が異なります:
 
-- 閾値・有効/無効は **コンパイル時定数**（`pub const`）:
-  - `compose::DEDUP_ENABLED: bool = true`
-  - `compose::DEDUP_IOS_THRESHOLD: f32 = 0.6`
-- CLI からは `--no-dedup` フラグのみで無効化できます（閾値の実行時変更は非サポート）:
+- 閾値は内部定数 `DEDUP_IOS_THRESHOLD: f32 = 0.6`（実行時変更は非サポート）
+- CLI からは `--no-dedup` フラグで無効化できます:
 
 ```bash
 # 既定（間引き有効）で実行
@@ -122,5 +120,5 @@ Rust版（`rust/src/compose.rs`）も Python版と同じ重複間引きロジッ
 ```
 
 - 文字列長の比較は Python版と同じ「文字数（コードポイント数）」で統一（Rust は `str::chars().count()`）。日本語でも両実装で同一の判定結果になります。
-- 间引きタイミングは Python版と同じく `strip_page_text`（原文 redaction）の後・テキスト配置前。間引かれたセグメントは原文 redaction 済み（白塗り枠）＋訳文なしで配置されます。
-- 閾値を変更したい場合は `rust/src/compose.rs` の const を編集してリビルドしてください。
+- 間引きタイミングは Python版と同じく `strip_page_text`（原文 redaction）の後・テキスト配置前。間引かれたセグメントは原文 redaction 済み（白塗り枠）＋訳文なしとなります。
+- 閾値を変更したい場合は `rust/src/compose.rs` の `DEDUP_IOS_THRESHOLD` を編集してリビルドしてください。

@@ -54,7 +54,22 @@ pub fn compose_pdf(
             }
         };
 
-        // Dedup BEFORE redaction so dropped segments don't leave blank gaps
+        // Collect text/caption bboxes to limit redaction scope
+        let text_rects: Vec<Rect> = entry
+            .segments
+            .iter()
+            .filter(|s| s.seg_type == "text" || s.seg_type == "caption")
+            .filter(|s| s.translated_text.as_ref().map(|t| !t.trim().is_empty()).unwrap_or(false))
+            .map(|s| {
+                let (x0, y0, x1, y1) = s.bbox;
+                Rect::new(x0 as f32, y0 as f32, x1 as f32, y1 as f32)
+            })
+            .collect();
+
+        // Strip original text within text/caption regions
+        strip_page_text(&mut page, &text_rects, &mut warnings, page_number);
+
+        // Dedup after redaction — dropped segments have original text removed and no translation placed
         let dropped: HashSet<usize> = if dedup_enabled {
             let page_bounds = page.bounds().unwrap_or(Rect::new(0.0, 0.0, 612.0, 792.0));
             let page_area = page_bounds.width() * page_bounds.height();
@@ -68,23 +83,6 @@ pub fn compose_pdf(
         } else {
             HashSet::new()
         };
-
-        // Collect text/caption bboxes to limit redaction scope (excluding dropped segments)
-        let text_rects: Vec<Rect> = entry
-            .segments
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| !dropped.contains(i))
-            .filter(|(_, s)| s.seg_type == "text" || s.seg_type == "caption")
-            .filter(|(_, s)| s.translated_text.as_ref().map(|t| !t.trim().is_empty()).unwrap_or(false))
-            .map(|(_, s)| {
-                let (x0, y0, x1, y1) = s.bbox;
-                Rect::new(x0 as f32, y0 as f32, x1 as f32, y1 as f32)
-            })
-            .collect();
-
-        // Strip original text only within text/caption regions
-        strip_page_text(&mut page, &text_rects, &mut warnings, page_number);
 
         for (i, segment) in entry.segments.iter().enumerate() {
             if dropped.contains(&i) {
@@ -405,7 +403,7 @@ fn determine_font_size(segment: &crate::schema::TranslationSegment, translated: 
 
     // Adaptive: shrink if translated text is much longer than source
     let src_chars = segment.char_count.unwrap_or(0);
-    let tgt_len = translated.len();
+    let tgt_len = translated.chars().count();
     if src_chars > 0 {
         let ratio = tgt_len as f32 / src_chars as f32;
         if ratio > 1.0 {

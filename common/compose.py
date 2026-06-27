@@ -83,13 +83,13 @@ def compose_pdf(
                 page_rect = page.rect
                 segments = entry.get("segments") or []
                 src_page = src_doc[src_index]
+                if opts.cover_original:
+                    _strip_page_text(page, opts, record_warning)
                 if opts.dedup_enabled:
                     page_area = page_rect.width * page_rect.height
                     segments = _dedup_text_segments(
                         segments, opts, page_number, page_area, record_warning
                     )
-                if opts.cover_original:
-                    _strip_page_text(page, opts, record_warning)
                 for segment in segments:
                     seg_type = segment.get("type")
                     if opts.target_types and seg_type not in opts.target_types:
