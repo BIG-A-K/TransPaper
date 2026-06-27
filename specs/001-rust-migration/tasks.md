@@ -44,28 +44,28 @@
 
 ## Phase 5: Translation
 
-- [P] 5.1 DeepL API 呼び出し関数を実装: reqwest blocking で POST (`rust/src/translate.rs`)
-- [ ] 5.2 バッチ処理ロジックを実装: 短文（< 50語）をまとめて送信 (`rust/src/translate.rs`)
-- [ ] 5.3 translate 関数を実装: SegmentPage → 翻訳済み JSON 出力 (`rust/src/translate.rs`)
-- [ ] 5.4 collect_translated_pages を実装: 翻訳済み JSON → Vec<TranslatedPage> (`rust/src/translate.rs`)
+- [x] 5.1 DeepL API 呼び出し関数を実装: reqwest blocking で POST (`rust/src/translate.rs`)
+- [x] 5.2 バッチ処理ロジックを実装: 短文（< 50語）をまとめて送信 (`rust/src/translate.rs`)
+- [x] 5.3 translate 関数を実装: SegmentPage → 翻訳済み JSON 出力 (`rust/src/translate.rs`)
+- [x] 5.4 collect_translated_pages を実装: 翻訳済み JSON → Vec<TranslatedPage> (`rust/src/translate.rs`)
 
 **チェックポイント**: segmentation JSON を入力として翻訳済み JSON が出力されること
 
 ## Phase 6: Composition
 
-- [ ] 6.1 compose_pdf を実装: 原文PDF + 翻訳済みJSON → 翻訳PDF出力 (`rust/src/compose.rs`)
-- [ ] 6.2 redaction（原文テキスト塗りつぶし）を実装 (`rust/src/compose.rs`)
-- [ ] 6.3 翻訳テキスト配置（フォントサイズ自動調整含む）を実装 (`rust/src/compose.rs`)
-- [ ] 6.4 画像/表/数式領域の再配置を実装 (`rust/src/compose.rs`)
-- [P] 6.5 compare PDF 生成（元→翻訳交互配置）を実装 (`rust/src/compose.rs`)
+- [x] 6.1 compose_pdf を実装: 原文PDF + 翻訳済みJSON → 翻訳PDF出力 (`rust/src/compose.rs`)
+- [x] 6.2 redaction（原文テキスト塗りつぶし）を実装: strip_page_text() (`rust/src/compose.rs`)
+- [x] 6.3 翻訳テキスト配置（フォントサイズ自動調整含む）を実装: Shape API + determine_font_size() (`rust/src/compose.rs`)
+- [x] 6.4 画像/表/数式領域: redaction対象外として元コンテンツを保持 (`rust/src/compose.rs`)
+- [x] 6.5 compare PDF 生成（元→翻訳交互配置）を実装: create_comparison_pdf() (`rust/src/compose.rs`)
 
 **チェックポイント**: attention_is_all_you_need.pdf のエンドツーエンド翻訳（--model idx）が Python 版と同等の出力PDFを生成すること
 
 ## Phase 7: CLI 統合・ビルド
 
-- [ ] 7.1 clap で CLI を完成: --input, --output, --model, --compare オプション (`rust/src/main.rs`)
-- [ ] 7.2 4ステージパイプラインを main.rs で統合 (`rust/src/main.rs`)
-- [P] 7.3 macOS (Apple Silicon / x86_64) + Linux (x86_64) 向けビルド検証 (`rust/Cargo.toml`, CI)
+- [x] 7.1 clap で CLI を完成: --input, --output, --model, --compare オプション (`rust/src/main.rs`)
+- [x] 7.2 4ステージパイプラインを main.rs で統合 — attention_is_all_you_need.pdf で e2e テスト成功 (`rust/src/main.rs`)
+- [ ] 7.3 macOS (Apple Silicon / x86_64) + Linux (x86_64) 向けビルド検証 (`rust/Cargo.toml`, CI)
 
 **チェックポイント**: シングルバイナリで `./transpaper --input paper.pdf --output translated.pdf --model deepl` が動作すること
 
