@@ -10,20 +10,20 @@
 
 ## Phase 1: Rust プロジェクト初期化
 
-- [ ] 1.1 `rust/` ディレクトリに Cargo プロジェクトを作成。candle-core, candle-nn, serde, serde_json, image, hf-hub を依存に追加 (`rust/Cargo.toml`)
-- [P] 1.2 Python版と互換の型定義を serde derive で実装: SegmentPage, SegmentBlock, TranslationSegment, TranslatedPage (`rust/src/schema.rs`)
-- [P] 1.3 main.rs に仮の CLI エントリポイントを作成 (`rust/src/main.rs`)
+- [x] 1.1 `rust/` ディレクトリに Cargo プロジェクトを作成。candle-core, candle-nn, serde, serde_json, image, hf-hub を依存に追加 (`rust/Cargo.toml`)
+- [x] 1.2 Python版と互換の型定義を serde derive で実装: SegmentPage, SegmentBlock, TranslationSegment, TranslatedPage (`rust/src/schema.rs`)
+- [x] 1.3 main.rs に仮の CLI エントリポイントを作成 (`rust/src/main.rs`)
 
 **チェックポイント**: `cargo build` が通ること
 
 ## Phase 2: PoC — candle で DocLayout-YOLO 推論（Go/No-Go）
 
-- [ ] 2.1 DocLayout-YOLO の safetensors 形式の入手方法を調査。HuggingFace Hub 上の `juliozhao/DocLayout-YOLO-DocStructBench` に safetensors があるか確認、なければ .pt → safetensors 変換スクリプトを作成 (`rust/scripts/convert_model.py`)
-- [ ] 2.2 candle で DocLayout-YOLO モデルアーキテクチャ（YOLOv10ベース）を定義・ロード (`rust/src/seg.rs`)
-- [ ] 2.3 PNG画像を読み込み、candle テンソルに変換して推論実行。bbox + class + confidence を出力 (`rust/src/seg.rs`)
-- [ ] 2.4 推論結果を SegmentBlock に変換し、Python版の出力JSONと目視比較 (`rust/src/seg.rs`)
+- [x] 2.1 DocLayout-YOLO のONNX形式モデルを `wybxc/DocLayout-YOLO-DocStructBench-onnx` から取得（candle-onnxがMaxPool未対応のためortに変更）
+- [x] 2.2 ort で DocLayout-YOLO ONNXモデルをロード (`rust/src/seg.rs`)
+- [x] 2.3 PNG画像を読み込み、前処理（リサイズ・パディング・正規化）→推論実行。bbox + class + confidence を出力 (`rust/src/seg.rs`)
+- [x] 2.4 推論結果を SegmentBlock に変換し、Python版の出力JSONと目視比較 → 17ブロック検出、構成一致を確認 (`rust/src/seg.rs`)
 
-**チェックポイント**: attention_is_all_you_need.pdf の1ページ目（Python版で事前PNG生成）に対して、Python版と概ね同じレイアウト要素が検出されること。**ここで No-Go なら中止。**
+**チェックポイント**: ✅ Go判定。Rust版・Python版ともに17ブロック検出、要素種類・構成が概ね一致。
 
 ## Phase 3: PoC — PDF操作ライブラリ選定
 

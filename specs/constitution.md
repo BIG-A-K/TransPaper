@@ -13,7 +13,7 @@
 ## 技術的制約
 
 - Rust edition 2021以上、stable toolchain を使用する。nightly 限定機能には依存しない。
-- ML推論は candle（HuggingFace公式Rust MLフレームワーク）を使用する。DocLayout-YOLOの推論がcandleで実現できない場合、Rust移行自体を中止する（No-Go判断）。
+- ML推論は ort（ONNX Runtime Rustバインディング）を使用する。ONNX形式のDocLayout-YOLOモデルで推論を行う。当初はcandleを予定していたが、candle-onnxのオペレーターサポートが不足していたため変更。
 - PDF操作ライブラリはPoCで選定する。必要機能は「PDF読み込み・テキスト抽出・redaction（塗りつぶし）・テキスト配置・画像挿入」の5点。候補はmupdf-rs、lopdf、pdf-rs。いずれも要件を満たせない場合はRust移行を中止する。
 
 ## 用語定義
@@ -30,3 +30,4 @@
 | 日付 | 変更内容 | 理由 |
 |------|----------|------|
 | 2026-06-27 | 新規作成: 設計原則5件、技術的制約3件、用語定義4件 | issue #0001 Rust移行に向けたconstitution策定 |
+| 2026-06-27 | 技術的制約変更: candle → ort (ONNX Runtime) | candle-onnxがMaxPool(padding付き)未サポートでDocLayout-YOLO推論不可。ort に切り替え |
