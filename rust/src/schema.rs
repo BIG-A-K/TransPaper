@@ -36,23 +36,6 @@ pub struct TextBlockMeta {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type")]
-pub enum SegmentBlockType {
-    #[serde(rename = "text")]
-    Text,
-    #[serde(rename = "image")]
-    Image,
-    #[serde(rename = "table")]
-    Table,
-    #[serde(rename = "caption")]
-    Caption,
-    #[serde(rename = "math")]
-    Math,
-    #[serde(rename = "merged")]
-    Merged,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SegmentBlock {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,

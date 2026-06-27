@@ -50,8 +50,20 @@ pub fn compose_pdf(
             }
         };
 
-        // Strip original text via redaction
-        strip_page_text(&mut page, &mut warnings, page_number);
+        // Collect text/caption bboxes to limit redaction scope
+        let text_rects: Vec<Rect> = entry
+            .segments
+            .iter()
+            .filter(|s| s.seg_type == "text" || s.seg_type == "caption")
+            .filter(|s| s.translated_text.as_ref().map(|t| !t.trim().is_empty()).unwrap_or(false))
+            .map(|s| {
+                let (x0, y0, x1, y1) = s.bbox;
+                Rect::new(x0 as f32, y0 as f32, x1 as f32, y1 as f32)
+            })
+            .collect();
+
+        // Strip original text only within text/caption regions
+        strip_page_text(&mut page, &text_rects, &mut warnings, page_number);
 
         for segment in &entry.segments {
             let (x0, y0, x1, y1) = segment.bbox;
@@ -107,9 +119,14 @@ pub fn compose_pdf(
 
 fn strip_page_text(
     page: &mut mupdf::pdf::PdfPage,
+    text_rects: &[Rect],
     warnings: &mut Vec<String>,
     page_number: usize,
 ) {
+    if text_rects.is_empty() {
+        return;
+    }
+
     let words = match page.words(mupdf::TextExtractOptions::default()) {
         Ok(w) => w,
         Err(e) => {
@@ -119,7 +136,12 @@ fn strip_page_text(
     };
 
     for word in &words {
-        let rect = expand_rect(&word.bounds, COVER_PADDING);
+        let wb = &word.bounds;
+        let in_text_region = text_rects.iter().any(|tr| rects_overlap(tr, wb));
+        if !in_text_region {
+            continue;
+        }
+        let rect = expand_rect(wb, COVER_PADDING);
         if let Err(e) = page.add_redact_annotation(rect) {
             warnings.push(format!("Page {page_number}: redact annotation failed: {e}"));
         }
@@ -128,6 +150,10 @@ fn strip_page_text(
     if let Err(e) = page.apply_redactions() {
         warnings.push(format!("Page {page_number}: apply redactions failed: {e}"));
     }
+}
+
+fn rects_overlap(a: &Rect, b: &Rect) -> bool {
+    a.x0 < b.x1 && a.x1 > b.x0 && a.y0 < b.y1 && a.y1 > b.y0
 }
 
 fn place_region_snapshot(

@@ -71,4 +71,6 @@
 
 ## converge で追記されたタスク
 
-`converge` フェーズで差分が見つかった場合にここへ追記し、implement ループへ戻す。
+- [x] C1 strip_page_text() を修正: text/caption ブロックの bbox 内のテキストのみ redact し、image/table/math 領域のテキストは保持する (`rust/src/compose.rs`)
+- [x] C2 spec.md の ADDED 要件を更新: "candle" → "ort (ONNX Runtime)"、モデル形式を "safetensors" → "ONNX" に修正 (`specs/001-rust-migration/spec.md`)
+- [x] C3 未使用の SegmentBlockType enum を削除 (`rust/src/schema.rs`)

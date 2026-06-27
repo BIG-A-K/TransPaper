@@ -14,7 +14,7 @@ TransPaper の処理パイプラインを Rust で再実装し、シングルバ
 
 ### ADDED（新規追加）
 
-- [ ] DocLayout-YOLO の candle 推論: Rust + candle で DocLayout-YOLO モデルを読み込み、PDF各ページの画像に対してレイアウト要素検出（Segmentation）を実行する。Python版 seg.py と同等の出力（SegmentBlock リスト with bbox, type, meta）を生成する。**PoC 最優先。candle で実現不可なら No-Go。**
+- [x] DocLayout-YOLO の ort 推論: Rust + ort (ONNX Runtime) で DocLayout-YOLO の ONNX モデルを読み込み、PDF各ページの画像に対してレイアウト要素検出（Segmentation）を実行する。Python版 seg.py と同等の出力（SegmentBlock リスト with bbox, type, meta）を生成する。**candle-onnx がオペレーター未対応のため ort に変更。**
 - [ ] DeepL API によるテキスト翻訳: Rust の HTTP クライアントで DeepL API を呼び出し、テキスト要素を日本語に翻訳する。短いテキストをまとめて送信するバッチ処理に対応する。
 - [ ] PDF読み込み・再構成（Composition）: Rust で PDF を読み込み、原文テキストの redaction、翻訳テキストの配置、画像/表/数式領域の再配置を行い、翻訳済み PDF を出力する。PDF操作ライブラリはPoCで選定する。
 - [ ] シングルバイナリとしてのクロスプラットフォームビルド: macOS（Apple Silicon / x86_64）および Linux（x86_64）向けにシングルバイナリをビルドし配布可能にする。CLI は Python 版と同等のオプション（--input, --output, --model, --compare）を提供する。
@@ -53,6 +53,6 @@ TransPaper の処理パイプラインを Rust で再実装し、シングルバ
 | Q | A（推奨案含む） |
 |---|---|
 | Rustプロジェクトの配置場所は同一リポジトリか別リポジトリか？ | 同一リポジトリ内に `rust/` ディレクトリを作成して配置する。Python版と共存させ、issue・specs・docsを共有する |
-| DocLayout-YOLOのモデル形式は？ | safetensors形式への変換を前提とする。candleがネイティブサポートしている形式。HuggingFace Hub上にsafetensors版があるか確認し、なければ手動変換する |
+| DocLayout-YOLOのモデル形式は？ | ONNX形式を使用。`wybxc/DocLayout-YOLO-DocStructBench-onnx` から取得。当初safetensors/candle予定だったがcandle-onnxのオペレーター制約によりort+ONNXに変更 |
 | PoCのGo/No-Go判断基準は？ | attention_is_all_you_need.pdfを入力としてPython版とRust版の出力を目視比較し、検出されるレイアウト要素の種類・位置が概ね一致すればGo。完全一致は不要 |
 | 中間ファイル形式はPython版と互換にするか？ | 同じJSON形式にする。パイプライン分離の原則に従い、Python版・Rust版の混在運用やデバッグ時の比較を可能にする |
