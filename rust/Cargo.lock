@@ -1479,11 +1479,32 @@ checksum = "185fb74927a40c569b7152c01c73f4c0206059b8b3d37c7eb007cc3f63453b64"
 dependencies = [
  "bitflags 2.13.0",
  "font-kit",
+ "mupdf-fonts-droid",
+ "mupdf-fonts-noto",
+ "mupdf-fonts-sil",
  "mupdf-sys",
  "once_cell",
  "percent-encoding",
  "zerocopy",
 ]
+
+[[package]]
+name = "mupdf-fonts-droid"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "762db7ec55fe4d5f8928b08f8ed5bb2885077f87e8ef37aaaae1c7a1edcd2369"
+
+[[package]]
+name = "mupdf-fonts-noto"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "475b055857dac04595f4814fff9cccc642c3a6a77b808cb3c3d73305780b6f75"
+
+[[package]]
+name = "mupdf-fonts-sil"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "511cf7073836b0c27eacbf32332b071d5f714fe1416d1ca62930731ce51ddc7f"
 
 [[package]]
 name = "mupdf-sys"

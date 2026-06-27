@@ -1,8 +1,8 @@
 use anyhow::{Context, Result};
 use mupdf::pdf::page::{InsertImageOptions, PageImageSource};
 use mupdf::pdf::PdfDocument;
-use mupdf::shape::{Shape, TextOptions};
-use mupdf::{Colorspace, ImageFormat, Matrix, Point, Rect};
+use mupdf::shape::{Shape, TextboxOptions};
+use mupdf::{CjkFontOrdering, Colorspace, ImageFormat, Matrix, Rect};
 use std::path::Path;
 
 use crate::schema::TranslatedPage;
@@ -11,6 +11,7 @@ const FONT_SIZE_SCALE: f32 = 0.95;
 const MIN_FONT_SIZE: f32 = 5.5;
 const MAX_FONT_SIZE: f32 = 28.0;
 const COVER_PADDING: f32 = 1.2;
+const LINE_SPACING: f32 = 1.05;
 
 pub struct ComposeResult {
     pub output_path: std::path::PathBuf,
@@ -179,23 +180,69 @@ fn place_text(
     warnings: &mut Vec<String>,
     page_number: usize,
 ) -> Result<bool> {
-    let opts = TextOptions {
-        fontsize: font_size,
-        ..Default::default()
-    };
+    let mut attempt_size = font_size;
+    let mut last_overflow: f32 = 0.0;
 
-    let mut shape = Shape::new(page).context("Failed to create shape")?;
-    let pos = Point::new(rect.x0, rect.y0 + font_size);
+    for _ in 0..12 {
+        let opts = TextboxOptions {
+            fontsize: attempt_size,
+            lineheight: LINE_SPACING,
+            fontname: "japan".to_owned(),
+            simple: false,
+            ordering: Some(CjkFontOrdering::AdobeJapan),
+            ..Default::default()
+        };
 
-    if let Err(e) = shape.insert_text(pos, text, &opts) {
-        warnings.push(format!(
-            "Page {page_number}: insert_text failed: {e}"
-        ));
-        return Ok(false);
+        let mut shape = Shape::new(page).context("Failed to create shape")?;
+        match shape.insert_textbox(rect, text, &opts) {
+            Ok(unused) if unused >= 0.0 => {
+                shape.commit(doc, true).context("Failed to commit shape")?;
+                return Ok(true);
+            }
+            Ok(overflow) => {
+                last_overflow = -overflow;
+                if attempt_size <= MIN_FONT_SIZE + 0.1 {
+                    break;
+                }
+                let new_size = (attempt_size * 0.9).max(MIN_FONT_SIZE);
+                attempt_size = if (new_size - attempt_size).abs() < 0.1 {
+                    MIN_FONT_SIZE
+                } else {
+                    new_size
+                };
+            }
+            Err(e) => {
+                warnings.push(format!(
+                    "Page {page_number}: insert_textbox failed: {e}"
+                ));
+                return Ok(false);
+            }
+        }
     }
 
-    shape.commit(doc, true).context("Failed to commit shape")?;
-    Ok(true)
+    let opts = TextboxOptions {
+        fontsize: MIN_FONT_SIZE,
+        lineheight: LINE_SPACING,
+        fontname: "japan".to_owned(),
+        simple: false,
+        ordering: Some(CjkFontOrdering::AdobeJapan),
+        ..Default::default()
+    };
+    let expanded = Rect::new(rect.x0, rect.y0, rect.x1, rect.y1 + last_overflow + 1.0);
+    let mut shape = Shape::new(page).context("Failed to create shape")?;
+    match shape.insert_textbox(expanded, text, &opts) {
+        Ok(_) => {
+            shape.commit(doc, true).context("Failed to commit shape")?;
+            warnings.push(format!(
+                "Page {page_number}: min font size {MIN_FONT_SIZE} overflowed, expanded rect"
+            ));
+            Ok(true)
+        }
+        Err(e) => {
+            warnings.push(format!("Page {page_number}: force-place failed: {e}"));
+            Ok(false)
+        }
+    }
 }
 
 fn determine_font_size(segment: &crate::schema::TranslationSegment, translated: &str) -> f32 {

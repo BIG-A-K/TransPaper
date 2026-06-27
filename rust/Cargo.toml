@@ -20,4 +20,4 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 indicatif = "0.17"
 anyhow = "1"
-mupdf = "0.8"
+mupdf = { version = "0.8", features = ["all-fonts"] }

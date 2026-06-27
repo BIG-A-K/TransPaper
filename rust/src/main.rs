@@ -152,6 +152,9 @@ fn run_pipeline(
     println!("  → {} segments placed", compose_result.segment_count);
     if !compose_result.warnings.is_empty() {
         println!("  ⚠ {} warnings", compose_result.warnings.len());
+        for w in compose_result.warnings.iter().take(10) {
+            println!("    - {w}");
+        }
     }
 
     // 5. Compare PDF (if requested)
