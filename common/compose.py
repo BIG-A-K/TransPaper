@@ -282,9 +282,7 @@ def _dedup_text_segments(
         if not bbox or len(bbox) != 4:
             continue
         is_target[idx] = True
-        text_len = len(
-            str(seg.get("translated_text") or seg.get("source_text") or "")
-        )
+        text_len = len(str(seg.get("translated_text") or seg.get("source_text") or ""))
         rect_tmp = fitz.Rect(bbox)
         area_tmp = rect_tmp.width * rect_tmp.height
         candidates.append((idx, text_len, area_tmp))
@@ -325,8 +323,7 @@ def _dedup_text_segments(
 
     dropped_set = {d[0] for d in dropped}
     result = [
-        seg for idx, seg in enumerate(segments)
-        if not (is_target[idx] and idx in dropped_set)
+        seg for idx, seg in enumerate(segments) if not (is_target[idx] and idx in dropped_set)
     ]
     for dropped_idx, kept_idx in dropped:
         record_warning(
