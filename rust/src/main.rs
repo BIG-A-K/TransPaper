@@ -110,9 +110,10 @@ fn run_pipeline(
         seg_results.iter().map(|p| p.blocks.len()).sum::<usize>());
 
     // Extract text metadata
+    let meta_doc = mupdf::Document::open(input.to_str().unwrap())?;
     for i in 0..seg_results.len() {
         let page_idx = seg_results[i].page - 1;
-        seg::extract_text_metadata(input, page_idx, &mut seg_results[i..=i])?;
+        seg::extract_text_metadata(&meta_doc, page_idx, &mut seg_results[i..=i])?;
     }
 
     // 2. Translation
@@ -196,7 +197,8 @@ fn run_subcommand(command: Commands) -> anyhow::Result<()> {
                 width: img.width() as f64,
                 height: img.height() as f64,
             };
-            let result = seg::run_onnx_inference(&model, &image, 1, page_size, conf)?;
+            let mut session = seg::create_session(&model)?;
+            let result = seg::run_onnx_inference(&mut session, &image, 1, page_size, conf)?;
             let json = serde_json::to_string_pretty(&result)?;
             std::fs::write(&output, &json)?;
             tracing::info!("Output written to {:?}", output);

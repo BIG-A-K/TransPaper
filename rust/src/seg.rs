@@ -165,22 +165,25 @@ fn parse_class_names(session: &Session) -> Vec<String> {
     result.into_iter().map(|(_, name)| name).collect()
 }
 
-pub fn run_onnx_inference(
-    model_path: &Path,
-    image_path: &Path,
-    page_index: usize,
-    page_size: PageSize,
-    conf_threshold: f64,
-) -> Result<SegmentPage> {
+pub fn create_session(model_path: &Path) -> Result<Session> {
     tracing::info!("Loading ONNX model from {:?}", model_path);
-    let mut session = Session::builder()
+    let session = Session::builder()
         .map_err(|e| anyhow::anyhow!("Failed to create ORT session builder: {e}"))?
         .with_intra_threads(4)
         .map_err(|e| anyhow::anyhow!("Failed to set intra threads: {e}"))?
         .commit_from_file(model_path)
         .map_err(|e| anyhow::anyhow!("Failed to load ONNX model {model_path:?}: {e}"))?;
+    Ok(session)
+}
 
-    let class_names = parse_class_names(&session);
+pub fn run_onnx_inference(
+    session: &mut Session,
+    image_path: &Path,
+    page_index: usize,
+    page_size: PageSize,
+    conf_threshold: f64,
+) -> Result<SegmentPage> {
+    let class_names = parse_class_names(session);
     tracing::info!("Class names: {:?}", class_names);
 
     let img = image::open(image_path)
@@ -267,7 +270,7 @@ pub fn run_onnx_inference(
         blocks,
         png_overlay: None,
         json: None,
-        doclayout_model: Some(model_path.to_string_lossy().to_string()),
+        doclayout_model: None,
         doclayout_confidence: Some(conf_threshold),
         doclayout_iou: None,
         dpi: None,
@@ -315,6 +318,11 @@ pub fn segment_pdf(
     let model_source = model::resolve_model(model_path_override);
     let model_desc = model_source.description();
 
+    let mut ort_session = match &model_source {
+        ModelSource::Local(mp) | ModelSource::HuggingFace(mp) => Some(create_session(mp)?),
+        ModelSource::Fallback => None,
+    };
+
     let doc = mupdf::Document::open(pdf_path.to_str().unwrap())
         .with_context(|| format!("Failed to open PDF: {pdf_path:?}"))?;
 
@@ -352,13 +360,13 @@ pub fn segment_pdf(
             .save_as(png_path.to_str().unwrap(), mupdf::ImageFormat::PNG)
             .with_context(|| format!("Failed to save page PNG: {png_path:?}"))?;
 
-        let mut seg_page = match &model_source {
-            ModelSource::Fallback => {
+        let mut seg_page = match &mut ort_session {
+            None => {
                 tracing::warn!("Page {}: using fallback (no model)", page_number);
                 fallback_segment_page(page_number, page_size)
             }
-            ModelSource::Local(mp) | ModelSource::HuggingFace(mp) => {
-                match run_onnx_inference(mp, &png_path, page_number, page_size.clone(), conf_threshold)
+            Some(session) => {
+                match run_onnx_inference(session, &png_path, page_number, page_size.clone(), conf_threshold)
                 {
                     Ok(mut sp) => {
                         // Convert bboxes from image pixel space to PDF point space
@@ -380,10 +388,6 @@ pub fn segment_pdf(
             }
         };
 
-        // Save overlay PNG
-        let overlay_path = outdir.join(format!("page_{page_number:03}_seg.png"));
-        seg_page.png_overlay = Some(overlay_path.to_string_lossy().to_string());
-
         // Save JSON
         let json_path = outdir.join(format!("page_{page_number:03}.json"));
         seg_page.json = Some(json_path.to_string_lossy().to_string());
@@ -403,13 +407,10 @@ pub fn segment_pdf(
 }
 
 pub fn extract_text_metadata(
-    pdf_path: &Path,
+    doc: &mupdf::Document,
     page_index: usize,
     seg_pages: &mut [SegmentPage],
 ) -> Result<()> {
-    let doc = mupdf::Document::open(pdf_path.to_str().unwrap())
-        .with_context(|| format!("Failed to open PDF: {pdf_path:?}"))?;
-
     for seg_page in seg_pages.iter_mut() {
         if seg_page.page != page_index + 1 {
             continue;
@@ -418,16 +419,17 @@ pub fn extract_text_metadata(
             .load_page(page_index as i32)
             .context("Failed to load page")?;
 
+        let words = match page.words(mupdf::TextExtractOptions::default()) {
+            Ok(w) => w,
+            Err(_) => continue,
+        };
+
         for block in seg_page.blocks.iter_mut() {
             if block.block_type != "text" && block.block_type != "caption" {
                 continue;
             }
             let (x0, y0, x1, y1) = block.bbox;
             let rect = mupdf::Rect::new(x0 as f32, y0 as f32, x1 as f32, y1 as f32);
-            let words = match page.words(mupdf::TextExtractOptions::default()) {
-                Ok(w) => w,
-                Err(_) => continue,
-            };
 
             let mut text_parts = Vec::new();
             let mut font_sizes = Vec::new();
@@ -453,7 +455,7 @@ pub fn extract_text_metadata(
             } else {
                 text.clone()
             };
-            meta.char_count = Some(text.len());
+            meta.char_count = Some(text.chars().count());
             meta.text_preview = Some(preview);
             meta.text = Some(text);
             if !font_sizes.is_empty() {
