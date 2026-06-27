@@ -360,7 +360,15 @@ pub fn segment_pdf(
             ModelSource::Local(mp) | ModelSource::HuggingFace(mp) => {
                 match run_onnx_inference(mp, &png_path, page_number, page_size.clone(), conf_threshold)
                 {
-                    Ok(sp) => sp,
+                    Ok(mut sp) => {
+                        // Convert bboxes from image pixel space to PDF point space
+                        let scale = 1.0 / zoom as f64;
+                        for block in sp.blocks.iter_mut() {
+                            let (x0, y0, x1, y1) = block.bbox;
+                            block.bbox = (x0 * scale, y0 * scale, x1 * scale, y1 * scale);
+                        }
+                        sp
+                    }
                     Err(e) => {
                         tracing::warn!(
                             "Page {}: inference failed, using fallback: {e}",
@@ -440,8 +448,8 @@ pub fn extract_text_metadata(
             }
 
             let meta = block.meta.get_or_insert_with(TextBlockMeta::default);
-            let preview = if text.len() > 200 {
-                text[..200].to_string()
+            let preview = if text.chars().count() > 200 {
+                text.chars().take(200).collect::<String>()
             } else {
                 text.clone()
             };
