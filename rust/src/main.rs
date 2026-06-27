@@ -24,6 +24,9 @@ struct Cli {
 
     #[arg(short, long, default_value_t = false, help = "Create comparison PDF")]
     compare: bool,
+
+    #[arg(long, default_value_t = false, help = "Disable duplicate segment deduplication")]
+    no_dedup: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -61,7 +64,8 @@ fn main() -> anyhow::Result<()> {
         .input
         .ok_or_else(|| anyhow::anyhow!("--input is required"))?;
 
-    run_pipeline(&input, cli.output, &cli.model, cli.compare)
+    let dedup_enabled = compose::DEDUP_ENABLED && !cli.no_dedup;
+    run_pipeline(&input, cli.output, &cli.model, cli.compare, dedup_enabled)
 }
 
 fn run_pipeline(
@@ -69,6 +73,7 @@ fn run_pipeline(
     output: Option<PathBuf>,
     model_name: &str,
     compare: bool,
+    dedup_enabled: bool,
 ) -> anyhow::Result<()> {
     let input_stem = input
         .file_stem()
@@ -148,7 +153,7 @@ fn run_pipeline(
     };
 
     let compose_result =
-        compose::compose_pdf(input, &translated_pages, &translated_pdf_path)?;
+        compose::compose_pdf(input, &translated_pages, &translated_pdf_path, dedup_enabled)?;
     println!("  → {} segments placed", compose_result.segment_count);
     if !compose_result.warnings.is_empty() {
         println!("  ⚠ {} warnings", compose_result.warnings.len());
