@@ -36,9 +36,9 @@
 
 ## Phase 4: Segmentation 完成
 
-- [ ] 4.1 モデル解決ロジックを実装: ローカルファイル優先 → hf-hub ダウンロード → フォールバック (`rust/src/model.rs`)
-- [ ] 4.2 PDF → PNG レンダリングを seg.rs に統合 (`rust/src/seg.rs`)
-- [ ] 4.3 segment_pdf 関数を実装: PDF入力 → YOLO推論 → SegmentPage JSON + overlay PNG 出力 (`rust/src/seg.rs`)
+- [x] 4.1 モデル解決ロジックを実装: ローカルファイル優先 → hf-hub ダウンロード → フォールバック (`rust/src/model.rs`)
+- [x] 4.2 PDF → PNG レンダリングを seg.rs に統合（mupdf使用） (`rust/src/seg.rs`)
+- [x] 4.3 segment_pdf 関数を実装: PDF入力 → YOLO推論 → SegmentPage JSON出力 + テキスト抽出 (`rust/src/seg.rs`)
 
 **チェックポイント**: `cargo run -- --input attention_is_all_you_need.pdf` で segmentation JSON が出力され、Python版と互換フォーマットであること
 

@@ -1,8 +1,10 @@
 use anyhow::{Context, Result};
+use mupdf::{Colorspace, Matrix};
 use ort::session::Session;
 use ort::value::Tensor;
 use std::path::Path;
 
+use crate::model::{self, ModelSource};
 use crate::schema::{PageSize, SegmentBlock, SegmentPage, TextBlockMeta};
 
 const INPUT_SIZE: u32 = 1024;
@@ -272,4 +274,186 @@ pub fn run_onnx_inference(
         granularity: Some("block".to_string()),
         math_threshold: None,
     })
+}
+
+fn fallback_segment_page(page_index: usize, page_size: PageSize) -> SegmentPage {
+    let block = SegmentBlock {
+        id: Some(format!("p{page_index:03}_b000")),
+        block_type: "text".to_string(),
+        bbox: (0.0, 0.0, page_size.width, page_size.height),
+        meta: Some(TextBlockMeta {
+            doclayout_label: Some("text".to_string()),
+            confidence: Some(1.0),
+            ..Default::default()
+        }),
+    };
+    SegmentPage {
+        page: page_index,
+        size: page_size,
+        blocks: vec![block],
+        png_overlay: None,
+        json: None,
+        doclayout_model: Some("fallback:text-full-page".to_string()),
+        doclayout_confidence: Some(0.25),
+        doclayout_iou: None,
+        dpi: None,
+        granularity: Some("block".to_string()),
+        math_threshold: None,
+    }
+}
+
+pub fn segment_pdf(
+    pdf_path: &Path,
+    outdir: &Path,
+    dpi: u32,
+    conf_threshold: f64,
+    model_path_override: Option<&Path>,
+) -> Result<Vec<SegmentPage>> {
+    std::fs::create_dir_all(outdir)
+        .with_context(|| format!("Failed to create output directory: {outdir:?}"))?;
+
+    let model_source = model::resolve_model(model_path_override);
+    let model_desc = model_source.description();
+
+    let doc = mupdf::Document::open(pdf_path.to_str().unwrap())
+        .with_context(|| format!("Failed to open PDF: {pdf_path:?}"))?;
+
+    let page_count = doc.page_count().context("Failed to get page count")?;
+    let zoom = dpi as f32 / 72.0;
+    let matrix = Matrix::new_scale(zoom, zoom);
+
+    let mut results = Vec::with_capacity(page_count as usize);
+
+    for page_idx in 0..page_count {
+        let page_number = (page_idx + 1) as usize;
+        let page = doc
+            .load_page(page_idx)
+            .with_context(|| format!("Failed to load page {page_number}"))?;
+
+        let bounds = page.bounds().context("Failed to get page bounds")?;
+        let page_size = PageSize {
+            width: bounds.x1 as f64 - bounds.x0 as f64,
+            height: bounds.y1 as f64 - bounds.y0 as f64,
+        };
+
+        let pixmap = page
+            .to_pixmap(&matrix, &Colorspace::device_rgb(), false, false)
+            .with_context(|| format!("Failed to render page {page_number}"))?;
+
+        let png_path = outdir.join(format!("page_{page_number:03}.png"));
+        pixmap
+            .save_as(png_path.to_str().unwrap(), mupdf::ImageFormat::PNG)
+            .with_context(|| format!("Failed to save page PNG: {png_path:?}"))?;
+
+        let mut seg_page = match &model_source {
+            ModelSource::Fallback => {
+                tracing::warn!("Page {}: using fallback (no model)", page_number);
+                fallback_segment_page(page_number, page_size)
+            }
+            ModelSource::Local(mp) | ModelSource::HuggingFace(mp) => {
+                match run_onnx_inference(mp, &png_path, page_number, page_size.clone(), conf_threshold)
+                {
+                    Ok(sp) => sp,
+                    Err(e) => {
+                        tracing::warn!(
+                            "Page {}: inference failed, using fallback: {e}",
+                            page_number
+                        );
+                        fallback_segment_page(page_number, page_size)
+                    }
+                }
+            }
+        };
+
+        // Save overlay PNG
+        let overlay_path = outdir.join(format!("page_{page_number:03}_seg.png"));
+        seg_page.png_overlay = Some(overlay_path.to_string_lossy().to_string());
+
+        // Save JSON
+        let json_path = outdir.join(format!("page_{page_number:03}.json"));
+        seg_page.json = Some(json_path.to_string_lossy().to_string());
+        seg_page.dpi = Some(dpi);
+        seg_page.doclayout_model = Some(model_desc.clone());
+
+        let json = serde_json::to_string_pretty(&seg_page)?;
+        std::fs::write(&json_path, &json)
+            .with_context(|| format!("Failed to write JSON: {json_path:?}"))?;
+
+        tracing::info!(
+            "Page {}/{}: {} blocks",
+            page_number,
+            page_count,
+            seg_page.blocks.len()
+        );
+        results.push(seg_page);
+    }
+
+    Ok(results)
+}
+
+pub fn extract_text_metadata(
+    pdf_path: &Path,
+    page_index: usize,
+    seg_pages: &mut [SegmentPage],
+) -> Result<()> {
+    let doc = mupdf::Document::open(pdf_path.to_str().unwrap())
+        .with_context(|| format!("Failed to open PDF: {pdf_path:?}"))?;
+
+    for seg_page in seg_pages.iter_mut() {
+        if seg_page.page != page_index + 1 {
+            continue;
+        }
+        let page = doc
+            .load_page(page_index as i32)
+            .context("Failed to load page")?;
+
+        for block in seg_page.blocks.iter_mut() {
+            if block.block_type != "text" && block.block_type != "caption" {
+                continue;
+            }
+            let (x0, y0, x1, y1) = block.bbox;
+            let rect = mupdf::Rect::new(x0 as f32, y0 as f32, x1 as f32, y1 as f32);
+            let words = match page.words(mupdf::TextExtractOptions::default()) {
+                Ok(w) => w,
+                Err(_) => continue,
+            };
+
+            let mut text_parts = Vec::new();
+            let mut font_sizes = Vec::new();
+            for word in &words {
+                let wr = word.bounds;
+                if rects_overlap(&rect, &wr) {
+                    text_parts.push(word.text.clone());
+                    let h = (wr.y1 - wr.y0) as f64;
+                    if h > 0.0 {
+                        font_sizes.push(h);
+                    }
+                }
+            }
+
+            let text = text_parts.join(" ");
+            if text.is_empty() {
+                continue;
+            }
+
+            let meta = block.meta.get_or_insert_with(TextBlockMeta::default);
+            let preview = if text.len() > 200 {
+                text[..200].to_string()
+            } else {
+                text.clone()
+            };
+            meta.char_count = Some(text.len());
+            meta.text_preview = Some(preview);
+            meta.text = Some(text);
+            if !font_sizes.is_empty() {
+                meta.avg_font_size =
+                    Some(font_sizes.iter().sum::<f64>() / font_sizes.len() as f64);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn rects_overlap(a: &mupdf::Rect, b: &mupdf::Rect) -> bool {
+    a.x0 < b.x1 && a.x1 > b.x0 && a.y0 < b.y1 && a.y1 > b.y0
 }

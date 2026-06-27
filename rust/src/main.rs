@@ -1,4 +1,5 @@
 mod compose;
+mod model;
 mod schema;
 mod seg;
 
