@@ -1,3 +1,4 @@
+mod compose;
 mod schema;
 mod seg;
 
@@ -23,6 +24,13 @@ enum Commands {
         model: String,
         #[arg(short, long, default_value_t = false, help = "Create comparison PDF")]
         compare: bool,
+    },
+    /// PoC: Test PDF operations (render, redact, text, image)
+    PocPdf {
+        #[arg(short, long, help = "Input PDF file path")]
+        input: PathBuf,
+        #[arg(short, long, default_value = "/tmp/poc_pdf_output", help = "Output directory")]
+        output: PathBuf,
     },
     /// PoC: Run ONNX inference on a PNG image
     PocInfer {
@@ -53,6 +61,39 @@ fn main() -> anyhow::Result<()> {
             tracing::info!("Model: {}", model);
             tracing::info!("Compare mode: {}", compare);
             tracing::info!("Full pipeline not yet implemented");
+        }
+        Commands::PocPdf { input, output } => {
+            tracing::info!("PoC: PDF operations test");
+            std::fs::create_dir_all(&output)?;
+
+            // Test 1: PDF → PNG rendering
+            let png_path = output.join("page1.png");
+            compose::poc_pdf_to_png(&input, 0, &png_path)?;
+            tracing::info!("Test 1 (PDF→PNG): PASS");
+
+            // Test 2: Redaction + text placement
+            let redacted_path = output.join("redacted.pdf");
+            compose::poc_redact_and_write(
+                &input,
+                &redacted_path,
+                0,
+                "Hello from Rust!",
+                (100.0, 100.0, 400.0, 130.0),
+            )?;
+            tracing::info!("Test 2 (Redaction + Text): PASS");
+
+            // Test 3: Image insertion
+            let img_path = output.join("image_inserted.pdf");
+            compose::poc_insert_image(
+                &input,
+                &img_path,
+                0,
+                &png_path,
+                (50.0, 600.0, 250.0, 750.0),
+            )?;
+            tracing::info!("Test 3 (Image insertion): PASS");
+
+            tracing::info!("All PDF PoC tests passed! Output in {:?}", output);
         }
         Commands::PocInfer {
             model,

@@ -27,12 +27,12 @@
 
 ## Phase 3: PoC — PDF操作ライブラリ選定
 
-- [ ] 3.1 mupdf-rs（または代替候補）で PDF → PNG レンダリングを検証 (`rust/src/compose.rs` or 検証用 example)
-- [ ] 3.2 同ライブラリで redaction（テキスト塗りつぶし）が可能か検証
-- [ ] 3.3 同ライブラリで テキスト配置・画像挿入が可能か検証
-- [ ] 3.4 ライブラリ選定結果を plan.md に反映
+- [x] 3.1 mupdf-rs v0.8.0 で PDF → PNG レンダリングを検証 → 1275x1650で正常出力 (`rust/src/compose.rs`)
+- [x] 3.2 mupdf-rs で redaction（テキスト塗りつぶし）+ テキスト配置を検証 → Shape API で成功 (`rust/src/compose.rs`)
+- [x] 3.3 mupdf-rs で画像挿入を検証 → PageImageSource::Bytes で成功 (`rust/src/compose.rs`)
+- [x] 3.4 ライブラリ選定結果: mupdf-rs v0.8.0（AGPL）に確定
 
-**チェックポイント**: PDF→PNG、redaction、テキスト配置、画像挿入の4機能が実現可能であること。**不可なら中止。**
+**チェックポイント**: ✅ PDF→PNG、redaction、テキスト配置、画像挿入の4機能すべて実現可能。
 
 ## Phase 4: Segmentation 完成
 
