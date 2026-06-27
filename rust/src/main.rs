@@ -83,10 +83,13 @@ fn run_pipeline(
         }
     });
 
-    tracing::info!("Input PDF: {:?}", input);
-    tracing::info!("Output PDF: {:?}", output_path);
-    tracing::info!("Model: {model_name}");
-    tracing::info!("Compare mode: {compare}");
+    println!("Input:   {}", input.display());
+    println!("Output:  {}", output_path.display());
+    println!("Model:   {model_name}");
+    if compare {
+        println!("Mode:    compare");
+    }
+    println!();
 
     let working_dir = PathBuf::from(format!("/tmp/_{input_stem}"));
     std::fs::create_dir_all(&working_dir)?;
@@ -94,9 +97,12 @@ fn run_pipeline(
     let n = if compare { 5 } else { 4 };
 
     // 1. Segmentation
-    tracing::info!("(1/{n}) segmentation...");
+    println!("({}/{n}) Segmentation...", 1);
     let seg_dir = working_dir.join("segments");
     let mut seg_results = seg::segment_pdf(input, &seg_dir, 150, 0.25, None)?;
+    println!("  → {} pages, {} blocks detected",
+        seg_results.len(),
+        seg_results.iter().map(|p| p.blocks.len()).sum::<usize>());
 
     // Extract text metadata
     for i in 0..seg_results.len() {
@@ -105,7 +111,7 @@ fn run_pipeline(
     }
 
     // 2. Translation
-    tracing::info!("(2/{n}) translation...");
+    println!("({}/{n}) Translation ({model_name})...", 2);
     let translated_dir = working_dir.join("translated");
     let auth_key = std::env::var("DEEPL_API").ok();
     let translation_ok = translate::translate(
@@ -119,18 +125,19 @@ fn run_pipeline(
     }
 
     // 3. Collect translated pages
-    tracing::info!("(3/{n}) collecting translated pages...");
+    println!("({}/{n}) Collecting translated pages...", 3);
     let translated_pages = translate::collect_translated_pages(&translated_dir)?;
     if translated_pages.is_empty() {
         anyhow::bail!("再構成できる翻訳結果が見つかりませんでした");
     }
+    println!("  → {} pages collected", translated_pages.len());
 
     let doc_translation_path = translated_dir.join("document_translation.json");
     let doc_json = serde_json::to_string_pretty(&translated_pages)?;
     std::fs::write(&doc_translation_path, &doc_json)?;
 
     // 4. Compose translated PDF
-    tracing::info!("(4/{n}) composing translated PDF...");
+    println!("({}/{n}) Composing translated PDF...", 4);
     let compose_dir = working_dir.join("composed");
     std::fs::create_dir_all(&compose_dir)?;
 
@@ -142,23 +149,21 @@ fn run_pipeline(
 
     let compose_result =
         compose::compose_pdf(input, &translated_pages, &translated_pdf_path)?;
-    tracing::info!("Composed PDF: {:?}", compose_result.output_path);
+    println!("  → {} segments placed", compose_result.segment_count);
     if !compose_result.warnings.is_empty() {
-        tracing::warn!("Compose warnings: {}", compose_result.warnings.len());
-        for w in &compose_result.warnings {
-            tracing::warn!("{w}");
-        }
+        println!("  ⚠ {} warnings", compose_result.warnings.len());
     }
 
     // 5. Compare PDF (if requested)
     if compare {
-        tracing::info!("(5/{n}) creating comparison PDF...");
+        println!("({}/{n}) Creating comparison PDF...", 5);
         let comparison_path =
             compose::create_comparison_pdf(input, &translated_pdf_path, &output_path)?;
-        tracing::info!("Comparison PDF created: {:?}", comparison_path);
+        println!("  → {}", comparison_path.display());
     }
 
-    tracing::info!("Done!");
+    println!();
+    println!("Done! → {}", output_path.display());
     Ok(())
 }
 

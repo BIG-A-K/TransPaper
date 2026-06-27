@@ -61,6 +61,13 @@ pub fn translate(
 
     let mut total_words = 0usize;
 
+    let pb = indicatif::ProgressBar::new(seg_results.len() as u64);
+    pb.set_style(
+        indicatif::ProgressStyle::with_template("  Translating [{bar:30}] {pos}/{len} pages")
+            .unwrap()
+            .progress_chars("█▓░"),
+    );
+
     for seg_page in seg_results.iter_mut() {
         // Collect texts to translate (separate pass to avoid borrow conflicts)
         let mut tasks: Vec<(usize, String)> = Vec::new();
@@ -131,9 +138,11 @@ pub fn translate(
         let json = serde_json::to_string_pretty(seg_page)?;
         std::fs::write(&out_path, &json)
             .with_context(|| format!("Failed to write: {out_path:?}"))?;
+        pb.inc(1);
     }
 
-    tracing::info!("Total translated words: {total_words}");
+    pb.finish_and_clear();
+    println!("  → {total_words} words translated");
     Ok(true)
 }
 

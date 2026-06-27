@@ -324,6 +324,13 @@ pub fn segment_pdf(
 
     let mut results = Vec::with_capacity(page_count as usize);
 
+    let pb = indicatif::ProgressBar::new(page_count as u64);
+    pb.set_style(
+        indicatif::ProgressStyle::with_template("  Segmenting [{bar:30}] {pos}/{len} pages")
+            .unwrap()
+            .progress_chars("█▓░"),
+    );
+
     for page_idx in 0..page_count {
         let page_number = (page_idx + 1) as usize;
         let page = doc
@@ -379,15 +386,11 @@ pub fn segment_pdf(
         std::fs::write(&json_path, &json)
             .with_context(|| format!("Failed to write JSON: {json_path:?}"))?;
 
-        tracing::info!(
-            "Page {}/{}: {} blocks",
-            page_number,
-            page_count,
-            seg_page.blocks.len()
-        );
         results.push(seg_page);
+        pb.inc(1);
     }
 
+    pb.finish_and_clear();
     Ok(results)
 }
 
