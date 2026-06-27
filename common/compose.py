@@ -27,6 +27,8 @@ class ComposeOptions:
     adaptive_length: bool = True
     length_ratio_power: float = 0.7
     length_ratio_cap: float = 4.0
+    dedup_enabled: bool = True
+    dedup_ios_threshold: float = 0.6
     max_logged_warnings: int = 50
 
 
@@ -83,6 +85,11 @@ def compose_pdf(
                 src_page = src_doc[src_index]
                 if opts.cover_original:
                     _strip_page_text(page, opts, record_warning)
+                if opts.dedup_enabled:
+                    page_area = page_rect.width * page_rect.height
+                    segments = _dedup_text_segments(
+                        segments, opts, page_number, page_area, record_warning
+                    )
                 for segment in segments:
                     seg_type = segment.get("type")
                     if opts.target_types and seg_type not in opts.target_types:
@@ -218,6 +225,106 @@ def _strip_page_text(page: fitz.Page, opts: ComposeOptions, record_warning) -> N
         page.apply_redactions(images=0, graphics=0, text=0)
     except RuntimeError as exc:
         record_warning(f"原文テキスト除去に失敗しました (page={page.number + 1}): {exc}")
+
+
+def _is_text_placement_target(segment: Mapping[str, object], opts: ComposeOptions) -> bool:
+    """セグメントがテキスト配置対象か（重複間引きの参加条件）。"""
+    seg_type = segment.get("type")
+    if seg_type in {"image", "table", "math"}:
+        return False
+    if opts.target_types and seg_type not in opts.target_types:
+        return False
+    text = (segment.get("translated_text") or "").strip()
+    return bool(text)
+
+
+def _rect_intersection_area(a: fitz.Rect, b: fitz.Rect) -> float:
+    inter = a & b
+    if inter.is_empty:
+        return 0.0
+    return inter.width * inter.height
+
+
+def _dedup_text_segments(
+    segments: Sequence[Mapping[str, object]],
+    opts: ComposeOptions,
+    page_number: int,
+    page_area: float,
+    record_warning: Callable[[str], None],
+) -> list[Mapping[str, object]]:
+    """配置前のテキストセグメント重複を間引く（案A: 2パス方式）。
+
+    IoS（共通面積 / 小さい方の面積）が opts.dedup_ios_threshold 以上のペアを重複とみなし、
+    テキスト長が短い方を除外する。残す方が同じ長さの場合は登場順が早い方を残す。
+    実際にテキスト配置されるセグメントのみが対象（image/table/math・空テキスト・
+    target_types 外はそのまま残す）。
+
+    巨大 bbox（ページ面積の40%超）は seg の異常検出とみなし処理順を後回しにする。
+    これにより通常の重複では長い方を残し（issue #0002 の b016/b017 は同サイズ→長い方 b016）、
+    巨大 bbox では先に accepted に入った個別セグメントを残して巨大 bbox を間引く
+    （p11_b001 問題への対策）。
+    """
+    threshold = opts.dedup_ios_threshold
+    if threshold <= 0.0 or len(segments) < 2:
+        return list(segments)
+
+    giant_area_threshold = page_area * 0.4  # ページ面積の40%超で巨大 bbox 扱い
+
+    candidates: list[tuple[int, int, float]] = []  # (idx, text_len, area)
+    for idx, seg in enumerate(segments):
+        if not _is_text_placement_target(seg, opts):
+            continue
+        bbox = seg.get("bbox")
+        if not bbox or len(bbox) != 4:
+            continue
+        text_len = len(seg.get("translated_text") or "")
+        rect_tmp = fitz.Rect(bbox)
+        area_tmp = rect_tmp.width * rect_tmp.height
+        candidates.append((idx, text_len, area_tmp))
+
+    # 通常セグメントと巨大セグメントで分ける
+    normal = [c for c in candidates if c[2] <= giant_area_threshold]
+    giant = [c for c in candidates if c[2] > giant_area_threshold]
+
+    # 通常は「テキスト長降順（長い方優先）→ idx 昇順」で残す優先度を決定
+    normal.sort(key=lambda t: (-t[1], t[0]))
+    # 巨大は後回し（idx 昇順で安定）
+    giant.sort(key=lambda t: t[0])
+
+    ordered = normal + giant  # 通常を先に処理
+
+    accepted: list[tuple[int, fitz.Rect, float]] = []
+    dropped: list[tuple[int, int]] = []  # (dropped_idx, kept_idx)
+    for idx, _text_len, area in ordered:
+        rect = fitz.Rect(segments[idx]["bbox"])
+        if area <= 0:
+            continue
+        kept_idx: int | None = None
+        for acc_idx, acc_rect, acc_area in accepted:
+            inter = _rect_intersection_area(rect, acc_rect)
+            if inter <= 0:
+                continue
+            ios = inter / min(area, acc_area)
+            if ios >= threshold:
+                kept_idx = acc_idx
+                break
+        if kept_idx is None:
+            accepted.append((idx, rect, area))
+        else:
+            dropped.append((idx, kept_idx))
+
+    if not dropped:
+        return list(segments)
+
+    dropped_set = {d[0] for d in dropped}
+    result = [seg for idx, seg in enumerate(segments) if idx not in dropped_set]
+    for dropped_idx, kept_idx in dropped:
+        record_warning(
+            f"重複セグメントを間引きました (page={page_number}, "
+            f"dropped_id={segments[dropped_idx].get('id')}, "
+            f"kept_id={segments[kept_idx].get('id')}, IoS≥{threshold})"
+        )
+    return result
 
 
 def _place_region_snapshot(

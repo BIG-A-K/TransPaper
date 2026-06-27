@@ -75,3 +75,50 @@ print(f"Comparison PDF created: {comparison_path}")
 - 行ボックスからはみ出す長さの訳文は自動的にフォントサイズを縮小します。それでも収まらない場合は一部が切り落とされ、警告が発生します。
 - 日本語描画にはCJK対応フォントが必要です。システムにインストール済みの`Noto Sans CJK`系フォントなどを指定してください。
 - 比較PDF作成時は、元のPDFと翻訳後のPDFのページ数が完全に一致している必要があります。
+
+## 重複セグメントの間引き
+
+前段（seg/translate）で同一テキスト領域が複数のオーバーラップセグメントとして検出されると、訳文が同じ位置に重なって描画されることがあります。`compose_pdf` は配置前にテキストセグメントの重複を間引き、1箇所に1つの訳文のみ配置します。
+
+- 判定基準: IoS（共通面積 / 小さい方の面積）≥ `dedup_ios_threshold`（既定 0.6）
+- 残す方: `translated_text`（未設定なら `source_text`）が長い方。同長の場合は登場順が早い方
+- 対象: 実際にテキスト配置されるセグメントのみ（`image`/`table`/`math`・空テキスト・`target_types` 外はそのまま残します）
+- 間引いたセグメントは `warnings` に `重複セグメントを間引きました ...` として記録されます
+- **巨大 bbox（ページ面積の40%超）の2パス方式**: seg の異常検出でページ全体を覆う巨大 bbox が生成されることがあります（参考文献ページ等で個別エントリを1つの巨大ブロックにまとめてしまう等）。このような巨大 bbox をそのまま「長い方優先」で残すと個別セグメントを全て吸収してレイアウトが崩壊するため、**面積がページ面積の40%を超えるセグメントは『異常検出』とみなし処理順を後回し**にします（閾値 `0.4` は固定値）。先に通常セグメント（≤40%）を長い方優先で確定させたあと、巨大セグメントを accepted と比較して重複（IoS≥閾値）すれば間引きます。これにより通常の重複では長い方を残し、巨大 bbox では個別セグメントを残す、という挙動になります（p11 の参考文献ページ等で効果を発揮）。
+
+`ComposeOptions` で制御できます:
+
+```python
+from common import compose
+
+result = compose.compose_pdf(
+    original_pdf="attention_is_all_you_need.pdf",
+    translated_pages="out/.../document_translation.json",
+    output_pdf="out/.../translated.pdf",
+    options=compose.ComposeOptions(
+        dedup_enabled=True,          # 既定: True
+        dedup_ios_threshold=0.6,     # 既定: 0.6。0 以下で無効化
+    ),
+)
+```
+
+前段の重複検出漏れを吸収する最終防衛栏として働くため、既定で有効です。重複判定を厳しくしたい場合は閾値を上げ（例: 0.8）、緩くしたい場合は下げてください。
+
+### Rust版での扱い
+
+Rust版（`rust/src/compose.rs`）も Python版と同じ重複間引きロジックを備えます（機能パリティ）。ただし設定方法が異なります:
+
+- 閾値は内部定数 `DEDUP_IOS_THRESHOLD: f32 = 0.6`（実行時変更は非サポート）
+- CLI からは `--no-dedup` フラグで無効化できます:
+
+```bash
+# 既定（間引き有効）で実行
+./rust/target/release/transpaper --input paper.pdf --output translated.pdf
+
+# 間引きを無効化（従来動作）
+./rust/target/release/transpaper --input paper.pdf --output translated.pdf --no-dedup
+```
+
+- 文字列長の比較は Python版と同じ「文字数（コードポイント数）」で統一（Rust は `str::chars().count()`）。日本語でも両実装で同一の判定結果になります。
+- 間引きタイミングは Python版と同じく `strip_page_text`（原文 redaction）の後・テキスト配置前。間引かれたセグメントは原文 redaction 済み（白塗り枠）＋訳文なしとなります。
+- 閾値を変更したい場合は `rust/src/compose.rs` の `DEDUP_IOS_THRESHOLD` を編集してリビルドしてください。
