@@ -1,0 +1,94 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  ARCH_DIR: transpaper-${{ github.ref_name }}-x86_64-linux
+
+jobs:
+  build-linux-x86_64:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            pkg-config \
+            libclang-dev \
+            patchelf
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+
+      - name: Build release binary
+        working-directory: rust
+        run: cargo build --release --locked
+
+      - name: Stage binary and runtime libs
+        working-directory: rust
+        run: |
+          set -euo pipefail
+          STAGE="target/${ARCH_DIR}"
+          mkdir -p "$STAGE"
+
+          BIN=target/release/transpaper
+
+          # Strip debug symbols to shrink the binary
+          strip "$BIN" || true
+          cp "$BIN" "$STAGE/"
+
+          # ort (download-binaries) dynamically links libonnxruntime.so.
+          # Bundle it and set rpath=$ORIGIN so the binary finds it next to itself.
+          FOUND=0
+          while IFS= read -r lib; do
+            cp -L "$lib" "$STAGE/"
+            FOUND=1
+          done < <(find target ~/.cargo -type f \( -name 'libonnxruntime.so*' \) 2>/dev/null | sort -u)
+          if [ "$FOUND" -eq 0 ]; then
+            echo "::warning::libonnxruntime.so not found; the binary may fail at runtime"
+          fi
+
+          # Make the binary look up bundled libs relative to its own location
+          patchelf --set-rpath '$ORIGIN' "$STAGE/transpaper" || true
+
+      - name: Verify dynamic dependencies
+        working-directory: rust/target
+        run: |
+          echo "=== NEEDED libs ==="
+          ldd "${ARCH_DIR}/transpaper" || true
+          echo "=== staged contents ==="
+          ls -lh "${ARCH_DIR}/"
+
+      - name: Create tarball
+        working-directory: rust/target
+        run: tar -czf "${ARCH_DIR}.tar.gz" "${ARCH_DIR}"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: transpaper-x86_64-linux
+          path: rust/target/${{ env.ARCH_DIR }}.tar.gz
+
+      - name: Create GitHub Release and upload asset
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: rust/target/${{ env.ARCH_DIR }}.tar.gz
+          generate_release_notes: true
+          fail_on_unmatched_files: true
