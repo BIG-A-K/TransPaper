@@ -7,6 +7,21 @@ Python版とRust版の2つの実装があります。
 
 ### Rust版（シングルバイナリ）
 
+Linux x86_64環境では、GitHub Releasesからビルド済みバイナリを取得できます。
+
+```sh
+curl -L -O https://github.com/BIG-A-K/TransPaper/releases/latest/download/transpaper-x86_64-linux.tar.gz
+curl -L -O https://github.com/BIG-A-K/TransPaper/releases/latest/download/transpaper-x86_64-linux.sha256
+sha256sum -c transpaper-x86_64-linux.sha256
+tar -xzf transpaper-x86_64-linux.tar.gz
+
+DEEPL_API={DEEPL_APIの鍵} ./transpaper-*-x86_64-linux/transpaper --input hoge.pdf --output translated_hoge.pdf --model deepl
+```
+
+リリースは`v*`タグをpushすると自動作成され、`transpaper-x86_64-linux.tar.gz`と検証用の`transpaper-x86_64-linux.sha256`が添付されます。
+
+ローカルでビルドする場合は以下を使用します。
+
 ```sh
 # ビルド
 cd rust && cargo build --release
