@@ -14,7 +14,7 @@ env:
 
 jobs:
   build-linux-x86_64:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -25,6 +25,7 @@ jobs:
           sudo apt-get install -y \
             build-essential \
             pkg-config \
+            libfontconfig1-dev \
             libclang-dev \
             patchelf
 
@@ -53,14 +54,14 @@ jobs:
           strip "$BIN" || true
           cp "$BIN" "$STAGE/"
 
-          # ort (download-binaries) dynamically links libonnxruntime.so.
-          # Bundle it and set rpath=$ORIGIN so the binary finds it next to itself.
+          # Some ort configurations dynamically link libonnxruntime.so.
+          # Bundle it when present and set rpath=$ORIGIN so the binary finds it next to itself.
           FOUND=0
           while IFS= read -r lib; do
             cp -L "$lib" "$STAGE/"
             FOUND=1
           done < <(find target ~/.cargo -type f \( -name 'libonnxruntime.so*' \) 2>/dev/null | sort -u)
-          if [ "$FOUND" -eq 0 ]; then
+          if [ "$FOUND" -eq 0 ] && ldd "$BIN" | grep -q 'libonnxruntime'; then
             echo "::warning::libonnxruntime.so not found; the binary may fail at runtime"
           fi
 
