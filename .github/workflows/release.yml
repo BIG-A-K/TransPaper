@@ -11,6 +11,8 @@ permissions:
 
 env:
   ARCH_DIR: transpaper-${{ github.ref_name }}-x86_64-linux
+  ARCHIVE_NAME: transpaper-x86_64-linux.tar.gz
+  CHECKSUM_NAME: transpaper-x86_64-linux.sha256
 
 jobs:
   build-linux-x86_64:
@@ -78,18 +80,24 @@ jobs:
 
       - name: Create tarball
         working-directory: rust/target
-        run: tar -czf "${ARCH_DIR}.tar.gz" "${ARCH_DIR}"
+        run: |
+          tar -czf "${ARCHIVE_NAME}" "${ARCH_DIR}"
+          sha256sum "${ARCHIVE_NAME}" > "${CHECKSUM_NAME}"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: transpaper-x86_64-linux
-          path: rust/target/${{ env.ARCH_DIR }}.tar.gz
+          path: |
+            rust/target/${{ env.ARCHIVE_NAME }}
+            rust/target/${{ env.CHECKSUM_NAME }}
 
       - name: Create GitHub Release and upload asset
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: rust/target/${{ env.ARCH_DIR }}.tar.gz
+          files: |
+            rust/target/${{ env.ARCHIVE_NAME }}
+            rust/target/${{ env.CHECKSUM_NAME }}
           generate_release_notes: true
           fail_on_unmatched_files: true
