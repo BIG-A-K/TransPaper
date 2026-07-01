@@ -16,8 +16,6 @@ const LINE_SPACING: f32 = 1.05;
 const DEDUP_IOS_THRESHOLD: f32 = 0.6;
 
 pub struct ComposeResult {
-    pub output_path: std::path::PathBuf,
-    pub page_count: usize,
     pub segment_count: usize,
     pub warnings: Vec<String>,
 }
@@ -132,8 +130,6 @@ pub fn compose_pdf(
         .with_context(|| format!("Failed to save PDF: {output_pdf:?}"))?;
 
     Ok(ComposeResult {
-        output_path: output_pdf.to_path_buf(),
-        page_count: translated_pages.len(),
         segment_count,
         warnings,
     })
