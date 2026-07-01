@@ -66,27 +66,44 @@ OLLAMA_TRANSLATE_SYSTEM_PROMPT = (
     "Do not add any explanation, preface, markdown, or formatting."
 )
 
+# --- Ollama バッチプロンプト化のパラメータ ---
+# この文字数以下のテキストは1プロンプトに束ねる候補になる
+OLLAMA_BATCH_CHAR_THRESHOLD = 300
+# 1つのバッチプロンプトに含めるテキスト数の上限
+OLLAMA_BATCH_MAX_ITEMS = 16
+# 1つのバッチプロンプトの入力合計文字数の上限
+OLLAMA_BATCH_MAX_CHARS = 3000
+
+OLLAMA_BATCH_SYSTEM_PROMPT = (
+    "You are a professional academic translator. "
+    'You receive a JSON object like {"texts": ["...", "..."]} containing '
+    "short English academic paper texts. "
+    "Translate each text into Japanese, preserving equations, symbols, citations, "
+    "references, section numbers, and inline code exactly as they are. "
+    'Return a JSON object {"translations": ["...", "..."]} with the SAME number '
+    "of items in the SAME order. Do not add any explanation."
+)
+
 
 def translate_ollama(
     texts: list[str],
     model_name: str,
     base_url: str | None = None,
-    timeout: float = 300.0,
     num_workers: int | None = None,
 ) -> list[str]:
-    """OllamaのHTTP API経由でローカルLLM翻訳を行う。
+    """Ollama のローカルLLMで翻訳。入力と同じ順序で返す。
 
-    複数テキストは並列リクエストで処理する（入力と同じ順序で返る）。
-    サーバー側で `OLLAMA_NUM_PARALLEL` を上げておくことで真の並列推論になる。
+    短いテキストは1プロンプトに束ねて1リクエストで翻訳し（リクエスト数削減）、
+    長いテキストは1テキスト1リクエスト。すべてのジョブを ThreadPoolExecutor で
+    並列実行する。真の並列推論にするにはサーバー側で OLLAMA_NUM_PARALLEL を
+    上げておく必要がある。
 
     Args:
         texts: 翻訳対象テキストのリスト
         model_name: `ollama:<model>` 形式のモデル指定
-        base_url: OllamaサーバーのベースURL。未指定時は `OLLAMA_HOST` 環境変数、
-            さらに未設定なら `http://localhost:11434`
-        timeout: 1リクエストのタイムアウト秒
-        num_workers: 並列リクエスト数。未指定時は `OLLAMA_NUM_WORKERS` 環境変数、
-            さらに未設定なら 8
+        base_url: OllamaサーバーのベースURL。未指定時は OLLAMA_HOST 環境変数、
+            さらに未設定なら http://localhost:11434
+        num_workers: 並列リクエスト数。未指定時は _default_num_workers() で自動決定
 
     Returns:
         翻訳結果テキストのリスト（入力と同じ順序）
@@ -102,33 +119,102 @@ def translate_ollama(
     base = base_url or os.getenv("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
     url = f"{base}/api/chat"
     if num_workers is None:
-        num_workers = max(1, int(os.getenv("OLLAMA_NUM_WORKERS", "8")))
+        num_workers = _default_num_workers()
 
-    # 1テキストならスレッドプールのオーバーヘッドを避ける
-    if len(texts) == 1:
-        return [_ollama_chat_one(texts[0], ollama_model, url, timeout)]
+    # 短いテキストを束ねた「ジョブ」群に分割（順序のインデックスを保持）
+    jobs = _plan_ollama_jobs(texts)
+    results: list[str | None] = [None] * len(texts)
 
-    workers = min(num_workers, len(texts))
-    with ThreadPoolExecutor(max_workers=workers) as ex:
-        return list(
-            ex.map(lambda t: _ollama_chat_one(t, ollama_model, url, timeout), texts)
-        )
+    def run_job(job):
+        slice_texts, indices = job
+        if len(slice_texts) == 1:
+            results[indices[0]] = _ollama_chat_one(slice_texts[0], ollama_model, url)
+        else:
+            outs = _ollama_chat_batch(slice_texts, ollama_model, url)
+            for i, t in zip(indices, outs):
+                results[i] = t
+
+    if len(jobs) == 1:
+        run_job(jobs[0])
+    else:
+        workers = min(num_workers, len(jobs))
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            list(tqdm(ex.map(run_job, jobs), total=len(jobs), desc="Ollama jobs"))
+
+    # フォールバック: 欠損があれば空文字で埋める
+    return [r if r is not None else "" for r in results]
 
 
-def _ollama_chat_one(text: str, ollama_model: str, url: str, timeout: float) -> str:
-    """1テキストを Ollama の `/api/chat` で翻訳する。"""
-    payload = {
+def _plan_ollama_jobs(
+    texts: list[str],
+) -> list[tuple[list[str], list[int]]]:
+    """テキストを翻訳ジョブ（バッチ or 個別）に分割。
+
+    長いテキスト（OLLAMA_BATCH_CHAR_THRESHOLD 超）は1テキスト1ジョブ。
+    短いテキストは OLLAMA_BATCH_MAX_ITEMS / OLLAMA_BATCH_MAX_CHARS の上限内で
+    1つのバッチジョブに貪欲に束ねる。元の順序のインデックスを各ジョブに保持する。
+    """
+    jobs: list[tuple[list[str], list[int]]] = []
+    batch_texts: list[str] = []
+    batch_idx: list[int] = []
+    batch_chars = 0
+
+    def flush():
+        nonlocal batch_texts, batch_idx, batch_chars
+        if batch_texts:
+            jobs.append((batch_texts, batch_idx))
+            batch_texts, batch_idx, batch_chars = [], [], 0
+
+    for i, t in enumerate(texts):
+        n = len(t)
+        if n > OLLAMA_BATCH_CHAR_THRESHOLD:
+            # 長いテキストは保留中のバッチを吐いてから個別ジョブに
+            flush()
+            jobs.append(([t], [i]))
+            continue
+        if (
+            len(batch_texts) + 1 > OLLAMA_BATCH_MAX_ITEMS
+            or batch_chars + n > OLLAMA_BATCH_MAX_CHARS
+        ):
+            flush()
+        batch_texts.append(t)
+        batch_idx.append(i)
+        batch_chars += n
+    flush()
+    return jobs
+
+
+def _estimate_num_predict(total_chars: int) -> int:
+    """入力合計文字数から生成トークン数の上限を見積もる。
+
+    英→日で文字数は増える方向だが、LLM の暴走（同一トークン反復など）時の
+    無駄な生成時間を抑えるための安全上限。
+    """
+    return max(64, min(4096, int(total_chars * 2.5)))
+
+
+def _ollama_chat_messages(
+    messages: list[dict],
+    ollama_model: str,
+    url: str,
+    num_predict: int,
+    fmt: dict | None = None,
+) -> str:
+    """Ollama の /api/chat で1リクエスト分の推論を行い、応答テキストを返す。
+
+    temperature=0 で決定的な翻訳を行い、num_predict で生成長の安全上限を設ける。
+    `fmt`（JSONスキーマ）が渡された場合は構造化出力を要求する。
+    """
+    payload: dict = {
         "model": ollama_model,
-        "messages": [
-            {"role": "system", "content": OLLAMA_TRANSLATE_SYSTEM_PROMPT},
-            {"role": "user", "content": text},
-        ],
+        "messages": messages,
         "stream": False,
+        "options": {"temperature": 0, "num_predict": num_predict},
     }
+    if fmt is not None:
+        payload["format"] = fmt
     try:
-        response = requests.post(
-            url, headers={"Content-Type": "application/json"}, json=payload, timeout=timeout
-        )
+        response = requests.post(url, headers={"Content-Type": "application/json"}, json=payload)
         response.raise_for_status()
         result = response.json()
         return str(result["message"]["content"]).strip()
@@ -137,28 +223,67 @@ def _ollama_chat_one(text: str, ollama_model: str, url: str, timeout: float) -> 
             f"Ollamaサーバーに接続できませんでした ({url})。"
             " `ollama serve` で起動しているか確認してください。"
         ) from e
-    except requests.exceptions.Timeout as e:
-        raise RuntimeError(
-            f"Ollamaサーバーがタイムアウトしました ({url})。"
-            " モデルが大きすぎるか、GPUメモリ不足の可能性があります。"
-        ) from e
     except requests.exceptions.HTTPError as e:
-        body = ""
-        if e.response is not None:
-            body = e.response.text
         if e.response is not None and e.response.status_code == 404:
             raise RuntimeError(
                 f"Ollamaモデル '{ollama_model}' が見つかりません。"
                 f" `ollama pull {ollama_model}` で取得してください。"
             ) from e
+        body = e.response.text if e.response is not None else ""
         raise RuntimeError(f"Ollama APIエラー: {e} body={body}") from e
     except KeyError as e:
         raise RuntimeError(f"Ollamaのレスポンス形式が想定と異なります: {result}") from e
 
 
-def _do_translate(
-    texts: list[str], model_name: str, auth_key: str | None = None
-) -> list[str]:
+def _ollama_chat_one(text: str, ollama_model: str, url: str) -> str:
+    """1テキストを Ollama の /api/chat で翻訳する。"""
+    return _ollama_chat_messages(
+        messages=[
+            {"role": "system", "content": OLLAMA_TRANSLATE_SYSTEM_PROMPT},
+            {"role": "user", "content": text},
+        ],
+        ollama_model=ollama_model,
+        url=url,
+        num_predict=_estimate_num_predict(len(text)),
+    )
+
+
+def _ollama_chat_batch(texts: list[str], ollama_model: str, url: str) -> list[str]:
+    """複数テキストを1プロンプトに束ねて1リクエストで翻訳する。
+
+    JSON構造化出力で件数と順序を保証する。件数が不一致になった場合は
+    フォールバックとして各テキストを個別に翻訳し直す。
+    """
+    total_chars = sum(len(t) for t in texts)
+    fmt = {
+        "type": "object",
+        "properties": {
+            "translations": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["translations"],
+    }
+    content = _ollama_chat_messages(
+        messages=[
+            {"role": "system", "content": OLLAMA_BATCH_SYSTEM_PROMPT},
+            {"role": "user", "content": json.dumps({"texts": list(texts)}, ensure_ascii=False)},
+        ],
+        ollama_model=ollama_model,
+        url=url,
+        num_predict=_estimate_num_predict(total_chars),
+        fmt=fmt,
+    )
+    try:
+        obj = json.loads(content)
+        trans = obj.get("translations", [])
+    except (json.JSONDecodeError, TypeError, AttributeError):
+        trans = []
+    if len(trans) != len(texts):
+        # 順序・件数が保証されなかったら確実に1テキストずつ翻訳
+        return [_ollama_chat_one(t, ollama_model, url) for t in texts]
+    return [str(x) for x in trans]
+
+
+def _do_translate(texts: list[str], model_name: str, auth_key: str | None = None) -> list[str]:
     """model_name に応じて翻訳バックエンドをディスパッチする。"""
     validate_model_name(model_name)
     if model_name == "idx":
@@ -195,6 +320,26 @@ def validate_model_name(model_name: str) -> None:
     )
 
 
+def _default_num_workers() -> int:
+    """Ollama翻訳の並列ワーカー数を自動決定。
+
+    優先順位:
+      1. 環境変数 TRANSPAPER_NUM_WORKERS
+      2. 環境変数 OLLAMA_NUM_WORKERS
+      3. CPU 論理コア数（min 2, max 8 でクランプ）
+
+    ※ Ollama の真の並列度はサーバー側の OLLAMA_NUM_PARALLEL に依存するため、
+       この値はあくまでクライアント側の同時リクエスト数の目安。サーバー側の
+       スロット数に合わせて環境変数で上書きすることを推奨。
+    """
+    for key in ("TRANSPAPER_NUM_WORKERS", "OLLAMA_NUM_WORKERS"):
+        v = os.getenv(key)
+        if v and v.strip().isdigit():
+            return max(1, int(v))
+    cpu = os.cpu_count() or 4
+    return max(2, min(cpu, 8))
+
+
 def translate(
     seg_results: list[SegmentPage],
     model_name="staka/fugumt-en-ja",
@@ -224,6 +369,7 @@ def translate(
         print("Using idx (no translation) for translation.")
     elif model_name.startswith("ollama:"):
         print(f"Using Ollama model '{model_name.split(':', 1)[1]}' for translation.")
+        return _translate_ollama_all(seg_results, model_name, out_dir)
     try:
         word_count = 0
         if not Path(out_dir).exists():
@@ -275,6 +421,59 @@ def translate(
             # ページ終了時にバッチを処理
             flush_batch()
 
+            json_path = Path(res["json"])
+            out_json_path = Path(out_dir) / json_path.name
+            with open(out_json_path, "w", encoding="utf-8") as out_f:
+                json.dump(res, out_f, ensure_ascii=False, indent=2)
+
+        print(f"Total translated words: {word_count}")
+        return True
+    except Exception as e:
+        print(f"Translation error: {e}")
+        return False
+
+
+def _translate_ollama_all(
+    seg_results: list[SegmentPage],
+    model_name: str,
+    out_dir: str,
+) -> bool:
+    """Ollama 用の全テキスト一括収集モード。
+
+    バッチプロンプト化と並列実行を最大限に活かすため、ページをまたいで
+    全テキストを一度収集してから translate_ollama() に渡し、結果を各ブロックの
+    meta["translated_text"] へ順序通りに書き戻す。
+    """
+    try:
+        if not Path(out_dir).exists():
+            Path(out_dir).mkdir(parents=True, exist_ok=True)
+
+        # 第1パス: 翻訳対象テキストを収集（block/meta と対応付けて順序を保持）
+        items: list[tuple[dict, dict, str]] = []  # (block, meta, original_text)
+        word_count = 0
+        for res in tqdm(seg_results, desc="Collecting segments"):
+            for block in res["blocks"]:
+                if block.get("type") not in ("text", "caption"):
+                    continue
+                meta = block.setdefault("meta", {})
+                original_text = (meta.get("text") or "").strip()
+                if not original_text:
+                    continue
+                items.append((block, meta, original_text))
+                word_count += len(original_text.split())
+
+        if items:
+            texts = [it[2] for it in items]
+            workers = _default_num_workers()
+            print(
+                f"Translating {len(texts)} segments ({word_count} words) with {workers} workers..."
+            )
+            translated = translate_ollama(texts, model_name)
+            for (block, meta, _), t in zip(items, translated):
+                meta["translated_text"] = t
+
+        # ページごとにJSONを保存
+        for res in seg_results:
             json_path = Path(res["json"])
             out_json_path = Path(out_dir) / json_path.name
             with open(out_json_path, "w", encoding="utf-8") as out_f:
