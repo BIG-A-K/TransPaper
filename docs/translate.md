@@ -1,6 +1,6 @@
 # 翻訳モジュール（`common/translate.py`）
 
-`common/translate.py` は翻訳バックエンドを統一した関数インターフェースで提供し、`main.py` から呼び出してセグメント化済みの PDF を翻訳します。現在は DeepL API と Hugging Face/MarianMT モデルに対応しています。
+`common/translate.py` は翻訳バックエンドを統一した関数インターフェースで提供し、`main.py` から呼び出してセグメント化済みの PDF を翻訳します。現在は DeepL API、Ollama経由のローカルLLM（Gemma系など）、Hugging Face/MarianMT モデルに対応しています。
 
 
 実行すると以下のステップを踏みます。
@@ -37,6 +37,45 @@ translated = transmod.translate_huggingface(
 <!-- TODO：実装 -->
 LLM APIを用いた翻訳も実装を予定しています。
 groqAPIは無料で使えるので、早く実装したいなと思っています。
+
+## Ollama経由のローカルLLMで翻訳する
+
+Ollamaが提供するローカルLLM（Gemma系など）を使った翻訳です。APIキー不要でオフライン実行できますが、事前にモデルの取得とサーバー起動が必要です。
+
+### 準備
+
+```sh
+# 使いたいモデルを取得（例: Gemma系）
+ollama pull gemma3:4b
+
+# Ollamaサーバーを起動（別プロセスで常時起動しておく）
+ollama serve
+```
+
+### 実行
+
+モデル名は `--model ollama:<model>` 形式で指定します。`ollama:` のあとに `ollama list` で表示されるモデル名をそのまま書きます。
+
+```sh
+uv run main.py --input hoge.pdf --model ollama:gemma3:4b
+uv run main.py --input hoge.pdf --model ollama:gemma3:12b
+```
+
+### エンドポイントの変更
+
+Ollamaサーバーが別ホストで動いている場合は `OLLAMA_HOST` 環境変数でベースURLを指定できます（既定: `http://localhost:11434`）。
+
+```sh
+OLLAMA_HOST=http://host.docker.internal:11434 uv run main.py --input hoge.pdf --model ollama:gemma3:4b
+```
+
+### 注意点
+
+- **遅さ**: 1セグメントごとに推論するためDeepLより大幅に遅くなります。モデルサイズが大きいほど顕著です。
+- **品質**: LLMは「自然な訳」より「要約・言い換え」に寄ることがあり、数式・引用・節番号が崩れる場合があります。プロンプトで保持を指示していますが要確認です。
+- **モデル未導入時**: 指定モデルが未pullの場合、原因が分かるエラー（`ollama pull <model>` を促す）を出します。
+- **サーバー未起動時**: 接続エラー時に `ollama serve` を促すメッセージを出します。
+- Docker開発環境からホストのOllamaを叩く場合は `OLLAMA_HOST=http://host.docker.internal:11434` を指定してください。
 
 ## 出力ディレクトリ構造
 

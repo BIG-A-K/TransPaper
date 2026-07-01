@@ -2,6 +2,7 @@
 # 1. DeepL API
 # 2. HuggingFaceの翻訳モデル
 import json
+import os
 from pathlib import Path
 
 import requests
@@ -72,6 +73,98 @@ def translate_huggingface(texts: list[str], model_name="staka/fugumt-en-ja") -> 
     # return translated_texts
 
 
+OLLAMA_TRANSLATE_SYSTEM_PROMPT = (
+    "You are a professional academic translator. "
+    "Translate the given English academic paper text into Japanese. "
+    "Preserve equations, symbols, citations, references, section numbers, "
+    "and inline code exactly as they are. "
+    "Return only the translated Japanese text. "
+    "Do not add any explanation, preface, markdown, or formatting."
+)
+
+
+def translate_ollama(
+    texts: list[str], model_name: str, base_url: str | None = None, timeout: float = 300.0
+) -> list[str]:
+    """OllamaのHTTP API経由でローカルLLM翻訳を行う。
+
+    Args:
+        texts: 翻訳対象テキストのリスト
+        model_name: `ollama:<model>` 形式のモデル指定
+        base_url: OllamaサーバーのベースURL。未指定時は `OLLAMA_HOST` 環境変数、
+            さらに未設定なら `http://localhost:11434`
+        timeout: 1リクエストのタイムアウト秒
+
+    Returns:
+        翻訳結果テキストのリスト
+    """
+    if isinstance(texts, str):
+        texts = [texts]
+    if not texts:
+        return []
+
+    # `ollama:<model>` のコロン以降をOllamaモデル名として扱う
+    ollama_model = model_name.split(":", 1)[1] if ":" in model_name else model_name
+
+    base = base_url or os.getenv("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
+    url = f"{base}/api/chat"
+
+    translated_texts: list[str] = []
+    for text in texts:
+        payload = {
+            "model": ollama_model,
+            "messages": [
+                {"role": "system", "content": OLLAMA_TRANSLATE_SYSTEM_PROMPT},
+                {"role": "user", "content": text},
+            ],
+            "stream": False,
+        }
+        try:
+            response = requests.post(
+                url, headers={"Content-Type": "application/json"}, json=payload, timeout=timeout
+            )
+            response.raise_for_status()
+            result = response.json()
+            content = str(result["message"]["content"]).strip()
+        except requests.exceptions.ConnectionError as e:
+            raise RuntimeError(
+                f"Ollamaサーバーに接続できませんでした ({url})。"
+                " `ollama serve` で起動しているか確認してください。"
+            ) from e
+        except requests.exceptions.Timeout as e:
+            raise RuntimeError(
+                f"Ollamaサーバーがタイムアウトしました ({url})。"
+                " モデルが大きすぎるか、GPUメモリ不足の可能性があります。"
+            ) from e
+        except requests.exceptions.HTTPError as e:
+            body = ""
+            if e.response is not None:
+                body = e.response.text
+            if e.response is not None and e.response.status_code == 404:
+                raise RuntimeError(
+                    f"Ollamaモデル '{ollama_model}' が見つかりません。"
+                    f" `ollama pull {ollama_model}` で取得してください。"
+                ) from e
+            raise RuntimeError(f"Ollama APIエラー: {e} body={body}") from e
+        except KeyError as e:
+            raise RuntimeError(f"Ollamaのレスポンス形式が想定と異なります: {result}") from e
+        translated_texts.append(content)
+    return translated_texts
+
+
+def _do_translate(
+    texts: list[str], model_name: str, auth_key: str | None = None
+) -> list[str]:
+    """model_name に応じて翻訳バックエンドをディスパッチする。"""
+    if model_name == "idx":
+        return idx(texts)
+    if model_name == "deepl":
+        return translate_deepl(texts, target_lang="JA", auth_key=auth_key)
+    if model_name.startswith("ollama:"):
+        return translate_ollama(texts, model_name=model_name)
+    return translate_huggingface(texts, model_name=model_name)
+
+
 def translate(
     seg_results: list[SegmentPage],
     model_name="staka/fugumt-en-ja",
@@ -83,15 +176,18 @@ def translate(
     翻訳を実行する。短いテキスト(単語数がbatch_threshold未満)はバッチ処理する。
     Args:
         seg_results: セグメント分割結果のリスト
-        model_name: 翻訳モデル名 ('deepl' または HuggingFaceモデル名)
+        model_name: 翻訳モデル名
+            ('deepl', 'idx', 'ollama:<model>' または HuggingFaceモデル名)
         out_dir: 出力ディレクトリ
-        auth_key: DeepL APIキー
+        auth_key: DeepL APIキー (deepl利用時)
         batch_threshold: この単語数未満のテキストをバッチ処理する (デフォルト: 50)
     """
     if model_name == "deepl":
         print("Using DeepL for translation.")
     elif model_name == "idx":
         print("Using idx (no translation) for translation.")
+    elif model_name.startswith("ollama:"):
+        print(f"Using Ollama model '{model_name.split(':', 1)[1]}' for translation.")
     else:
         print(f"Using HuggingFace model '{model_name}' for translation.")
     try:
@@ -108,15 +204,7 @@ def translate(
             if not batch_text:
                 return
 
-            if model_name == "idx":
-                translated_texts = idx(batch_text)
-
-            elif model_name == "deepl":
-                # DeepLで翻訳
-                translated_texts = translate_deepl(batch_text, target_lang="JA", auth_key=auth_key)
-            else:
-                # HuggingFaceモデルで翻訳
-                translated_texts = translate_huggingface(batch_text, model_name=model_name)
+            translated_texts = _do_translate(batch_text, model_name, auth_key)
 
             # 翻訳結果を各ブロックに割り当て
             for (block, meta, _), translated in zip(batch_buffer, translated_texts):
@@ -147,20 +235,8 @@ def translate(
                         flush_batch()
 
                         # 長いテキストは個別に翻訳
-                        if model_name == "deepl":
-                            translated_texts = translate_deepl(
-                                [original_text], target_lang="JA", auth_key=auth_key
-                            )
-                            translated_text = translated_texts[0]
-                        elif model_name == "idx":
-                            translated_texts = idx([original_text])
-                            translated_text = translated_texts[0]
-                        else:
-                            translated_texts = translate_huggingface(
-                                [original_text], model_name=model_name
-                            )
-                            translated_text = translated_texts[0]
-                        meta["translated_text"] = translated_text
+                        translated_texts = _do_translate([original_text], model_name, auth_key)
+                        meta["translated_text"] = translated_texts[0]
 
             # ページ終了時にバッチを処理
             flush_batch()
