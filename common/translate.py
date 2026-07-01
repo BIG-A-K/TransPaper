@@ -86,7 +86,7 @@ def translate_ollama(
             さらに未設定なら `http://localhost:11434`
         timeout: 1リクエストのタイムアウト秒
         num_workers: 並列リクエスト数。未指定時は `OLLAMA_NUM_WORKERS` 環境変数、
-            さらに未設定なら 4
+            さらに未設定なら 8
 
     Returns:
         翻訳結果テキストのリスト（入力と同じ順序）
@@ -102,7 +102,7 @@ def translate_ollama(
     base = base_url or os.getenv("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
     url = f"{base}/api/chat"
     if num_workers is None:
-        num_workers = max(1, int(os.getenv("OLLAMA_NUM_WORKERS", "4")))
+        num_workers = max(1, int(os.getenv("OLLAMA_NUM_WORKERS", "8")))
 
     # 1テキストならスレッドプールのオーバーヘッドを避ける
     if len(texts) == 1:

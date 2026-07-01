@@ -75,10 +75,10 @@ OLLAMA_HOST=http://host.docker.internal:11434 uv run main.py --input hoge.pdf --
 
 ```sh
 # サーバー側: 並列スロット数を指定して起動（GPUメモリが許す限り）
-OLLAMA_NUM_PARALLEL=4 ollama serve
+OLLAMA_NUM_PARALLEL=8 ollama serve
 
-# クライアント側の同時リクエスト数（既定: 4）。環境変数で調整可能
-OLLAMA_NUM_WORKERS=4 uv run main.py --input hoge.pdf --model ollama:gemma3:4b
+# クライアント側の同時リクエスト数（既定: 8）。環境変数で調整可能
+OLLAMA_NUM_WORKERS=8 uv run main.py --input hoge.pdf --model ollama:gemma3:4b
 ```
 
 - `OLLAMA_NUM_PARALLEL`（サーバー）と `OLLAMA_NUM_WORKERS`（クライアント）を合わせるのが目安です
