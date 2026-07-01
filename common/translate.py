@@ -49,28 +49,11 @@ def idx(texts: list[str]) -> list[str]:
 
 
 def translate_huggingface(texts: list[str], model_name="staka/fugumt-en-ja") -> list[str]:
-    # TODO: 実装
-    return idx(texts)
-    # from transformers import MarianMTModel, MarianTokenizer
-
-    # if not texts:
-    #     return []
-
-    # # 単一のテキストが渡された場合でもリストとして処理
-    # if isinstance(texts, str):
-    #     texts = [texts]
-
-    # tokenizer = MarianTokenizer.from_pretrained(model_name)
-    # model = MarianMTModel.from_pretrained(model_name)
-
-    # # 各テキストを個別に翻訳
-    # translated_texts = []
-    # for text in texts:
-    #     translated = model.generate(**tokenizer(text, return_tensors="pt", padding=True))
-    #     translated_text = tokenizer.decode(translated[0], skip_special_tokens=True)
-    #     translated_texts.append(translated_text)
-
-    # return translated_texts
+    # TODO: 実装 (MarianMT等)
+    raise NotImplementedError(
+        f"HuggingFace翻訳は未実装です (model_name={model_name})。"
+        " 現在は 'deepl', 'idx', 'ollama:<model>' が利用可能です。"
+    )
 
 
 OLLAMA_TRANSLATE_SYSTEM_PROMPT = (
@@ -156,13 +139,39 @@ def _do_translate(
     texts: list[str], model_name: str, auth_key: str | None = None
 ) -> list[str]:
     """model_name に応じて翻訳バックエンドをディスパッチする。"""
+    validate_model_name(model_name)
     if model_name == "idx":
         return idx(texts)
     if model_name == "deepl":
         return translate_deepl(texts, target_lang="JA", auth_key=auth_key)
     if model_name.startswith("ollama:"):
         return translate_ollama(texts, model_name=model_name)
-    return translate_huggingface(texts, model_name=model_name)
+    # validate_model_name で弾くのでここには到達しない
+    raise ValueError(f"未知の翻訳モデルです: '{model_name}'")
+
+
+def validate_model_name(model_name: str) -> None:
+    """翻訳モデル名が有効か検証する。無効な場合は ValueError を発生させる。
+
+    有効な指定:
+        - 'deepl'
+        - 'idx'
+        - 'ollama:<model>' (例: 'ollama:gemma3:4b')
+    """
+    if model_name in ("idx", "deepl"):
+        return
+    if model_name.startswith("ollama:"):
+        ollama_model = model_name.split(":", 1)[1]
+        if not ollama_model:
+            raise ValueError(
+                f"Ollamaモデル名が空です: '{model_name}'。"
+                " `ollama:<model>` 形式で指定してください (例: ollama:gemma3:4b)"
+            )
+        return
+    raise ValueError(
+        f"未知の翻訳モデルです: '{model_name}'。"
+        " 指定可能: 'deepl', 'idx', 'ollama:<model>' (例: ollama:gemma3:4b)"
+    )
 
 
 def translate(
@@ -182,14 +191,18 @@ def translate(
         auth_key: DeepL APIキー (deepl利用時)
         batch_threshold: この単語数未満のテキストをバッチ処理する (デフォルト: 50)
     """
+    try:
+        validate_model_name(model_name)
+    except ValueError as e:
+        print(f"ERROR: {e}")
+        return False
+
     if model_name == "deepl":
         print("Using DeepL for translation.")
     elif model_name == "idx":
         print("Using idx (no translation) for translation.")
     elif model_name.startswith("ollama:"):
         print(f"Using Ollama model '{model_name.split(':', 1)[1]}' for translation.")
-    else:
-        print(f"Using HuggingFace model '{model_name}' for translation.")
     try:
         word_count = 0
         if not Path(out_dir).exists():

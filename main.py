@@ -51,6 +51,10 @@ def main(input, output, model, compare):
     working_dir.mkdir(parents=True, exist_ok=True)
 
     logger.info(f"Model: {model}")
+    try:
+        translate.validate_model_name(model)
+    except ValueError as e:
+        raise click.ClickException(str(e)) from e
     n = 5 if compare else 4
     #  1.segment分割を実行する。
     logger.info(f"(1/{n}) segmentation...")
