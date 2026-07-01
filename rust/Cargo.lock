@@ -2701,6 +2701,7 @@ dependencies = [
  "indicatif",
  "mupdf",
  "ort",
+ "rayon",
  "reqwest",
  "serde",
  "serde_json",
