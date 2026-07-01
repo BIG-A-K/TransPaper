@@ -3,6 +3,7 @@
 # 2. HuggingFaceの翻訳モデル
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import requests
@@ -67,9 +68,16 @@ OLLAMA_TRANSLATE_SYSTEM_PROMPT = (
 
 
 def translate_ollama(
-    texts: list[str], model_name: str, base_url: str | None = None, timeout: float = 300.0
+    texts: list[str],
+    model_name: str,
+    base_url: str | None = None,
+    timeout: float = 300.0,
+    num_workers: int | None = None,
 ) -> list[str]:
     """OllamaのHTTP API経由でローカルLLM翻訳を行う。
+
+    複数テキストは並列リクエストで処理する（入力と同じ順序で返る）。
+    サーバー側で `OLLAMA_NUM_PARALLEL` を上げておくことで真の並列推論になる。
 
     Args:
         texts: 翻訳対象テキストのリスト
@@ -77,9 +85,11 @@ def translate_ollama(
         base_url: OllamaサーバーのベースURL。未指定時は `OLLAMA_HOST` 環境変数、
             さらに未設定なら `http://localhost:11434`
         timeout: 1リクエストのタイムアウト秒
+        num_workers: 並列リクエスト数。未指定時は `OLLAMA_NUM_WORKERS` 環境変数、
+            さらに未設定なら 4
 
     Returns:
-        翻訳結果テキストのリスト
+        翻訳結果テキストのリスト（入力と同じ順序）
     """
     if isinstance(texts, str):
         texts = [texts]
@@ -91,48 +101,59 @@ def translate_ollama(
 
     base = base_url or os.getenv("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
     url = f"{base}/api/chat"
+    if num_workers is None:
+        num_workers = max(1, int(os.getenv("OLLAMA_NUM_WORKERS", "4")))
 
-    translated_texts: list[str] = []
-    for text in texts:
-        payload = {
-            "model": ollama_model,
-            "messages": [
-                {"role": "system", "content": OLLAMA_TRANSLATE_SYSTEM_PROMPT},
-                {"role": "user", "content": text},
-            ],
-            "stream": False,
-        }
-        try:
-            response = requests.post(
-                url, headers={"Content-Type": "application/json"}, json=payload, timeout=timeout
-            )
-            response.raise_for_status()
-            result = response.json()
-            content = str(result["message"]["content"]).strip()
-        except requests.exceptions.ConnectionError as e:
+    # 1テキストならスレッドプールのオーバーヘッドを避ける
+    if len(texts) == 1:
+        return [_ollama_chat_one(texts[0], ollama_model, url, timeout)]
+
+    workers = min(num_workers, len(texts))
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        return list(
+            ex.map(lambda t: _ollama_chat_one(t, ollama_model, url, timeout), texts)
+        )
+
+
+def _ollama_chat_one(text: str, ollama_model: str, url: str, timeout: float) -> str:
+    """1テキストを Ollama の `/api/chat` で翻訳する。"""
+    payload = {
+        "model": ollama_model,
+        "messages": [
+            {"role": "system", "content": OLLAMA_TRANSLATE_SYSTEM_PROMPT},
+            {"role": "user", "content": text},
+        ],
+        "stream": False,
+    }
+    try:
+        response = requests.post(
+            url, headers={"Content-Type": "application/json"}, json=payload, timeout=timeout
+        )
+        response.raise_for_status()
+        result = response.json()
+        return str(result["message"]["content"]).strip()
+    except requests.exceptions.ConnectionError as e:
+        raise RuntimeError(
+            f"Ollamaサーバーに接続できませんでした ({url})。"
+            " `ollama serve` で起動しているか確認してください。"
+        ) from e
+    except requests.exceptions.Timeout as e:
+        raise RuntimeError(
+            f"Ollamaサーバーがタイムアウトしました ({url})。"
+            " モデルが大きすぎるか、GPUメモリ不足の可能性があります。"
+        ) from e
+    except requests.exceptions.HTTPError as e:
+        body = ""
+        if e.response is not None:
+            body = e.response.text
+        if e.response is not None and e.response.status_code == 404:
             raise RuntimeError(
-                f"Ollamaサーバーに接続できませんでした ({url})。"
-                " `ollama serve` で起動しているか確認してください。"
+                f"Ollamaモデル '{ollama_model}' が見つかりません。"
+                f" `ollama pull {ollama_model}` で取得してください。"
             ) from e
-        except requests.exceptions.Timeout as e:
-            raise RuntimeError(
-                f"Ollamaサーバーがタイムアウトしました ({url})。"
-                " モデルが大きすぎるか、GPUメモリ不足の可能性があります。"
-            ) from e
-        except requests.exceptions.HTTPError as e:
-            body = ""
-            if e.response is not None:
-                body = e.response.text
-            if e.response is not None and e.response.status_code == 404:
-                raise RuntimeError(
-                    f"Ollamaモデル '{ollama_model}' が見つかりません。"
-                    f" `ollama pull {ollama_model}` で取得してください。"
-                ) from e
-            raise RuntimeError(f"Ollama APIエラー: {e} body={body}") from e
-        except KeyError as e:
-            raise RuntimeError(f"Ollamaのレスポンス形式が想定と異なります: {result}") from e
-        translated_texts.append(content)
-    return translated_texts
+        raise RuntimeError(f"Ollama APIエラー: {e} body={body}") from e
+    except KeyError as e:
+        raise RuntimeError(f"Ollamaのレスポンス形式が想定と異なります: {result}") from e
 
 
 def _do_translate(
