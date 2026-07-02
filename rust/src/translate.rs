@@ -52,7 +52,6 @@ fn translate_idx(texts: &[String]) -> Vec<String> {
 }
 
 const OLLAMA_SYSTEM_PROMPT: &str = "You are a professional academic translator. Translate the given English academic paper text into Japanese. Preserve equations, symbols, citations, references, section numbers, and inline code exactly as they are. Return only the translated Japanese text. Do not add any explanation, preface, markdown, or formatting.";
-const OLLAMA_TIMEOUT_SECS: u64 = 300;
 const OLLAMA_DEFAULT_WORKERS: usize = 8;
 
 fn ollama_base_url() -> String {
@@ -96,10 +95,6 @@ fn translate_ollama_one(
                 anyhow::bail!(
                     "Ollamaサーバーに接続できませんでした ({url})。 `ollama serve` で起動しているか確認してください。"
                 );
-            } else if e.is_timeout() {
-                anyhow::bail!(
-                    "Ollamaサーバーがタイムアウトしました ({url})。 モデルが大きすぎるか、GPUメモリ不足の可能性があります。"
-                );
             }
             return Err(e).context("Ollama API request failed");
         }
@@ -137,7 +132,7 @@ fn translate_ollama(texts: &[String], model_name: &str) -> Result<Vec<String>> {
     let url = format!("{}/api/chat", ollama_base_url());
 
     let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(OLLAMA_TIMEOUT_SECS))
+        .timeout(None::<std::time::Duration>)
         .build()
         .context("Failed to build HTTP client for Ollama")?;
 
