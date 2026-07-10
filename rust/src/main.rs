@@ -19,7 +19,7 @@ struct Cli {
     #[arg(short, long, help = "Output PDF file path")]
     output: Option<PathBuf>,
 
-    #[arg(short, long, default_value = "deepl", help = "Translation model (deepl, idx)")]
+    #[arg(short, long, default_value = "deepl", help = "Translation model (deepl, idx, ollama:<model>)")]
     model: String,
 
     #[arg(short, long, default_value_t = false, help = "Create comparison PDF")]
@@ -95,6 +95,9 @@ fn run_pipeline(
         println!("Mode:    compare");
     }
     println!();
+
+    // 未知モデルはセグメンテーションの前に弾く
+    translate::validate_model_name(model_name)?;
 
     let working_dir = PathBuf::from(format!("/tmp/_{input_stem}"));
     std::fs::create_dir_all(&working_dir)?;

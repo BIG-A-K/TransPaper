@@ -16,9 +16,19 @@ services:
       - GID=${GROUP_ID}
     init: true
     command: ["sleep", "infinity"]
+    working_dir: /home/${USER}/TransPaper
     volumes:
       - ../:/home/${USER}/TransPaper:rw
       - ./zshrc:/home/${USER}/.zshrc:ro
-      # Persist Codex CLI auth/config across container restarts
-      - ${HOME}/.config/codex:/home/${USER}/.config/codex:rw
-      - ${HOME}/.codex:/home/${USER}/.codex:rw
+  ollama:
+    image: ollama/ollama
+    user: "${USER_ID}:${GROUP_ID}"
+    ports:
+      - "11434:11434"
+    environment:
+      - HOME=/home/${USER}
+      - OLLAMA_HOST=0.0.0.0
+    volumes:
+      - ${HOME}/.ollama-transpaper:/home/${USER}/.ollama
+    restart: unless-stopped
+    # For NVIDIA GPU: make up-gpu (GPU=<id> で使用GPUを指定、デフォルト 0)

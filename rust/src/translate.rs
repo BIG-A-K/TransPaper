@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use rayon::prelude::*;
 use std::path::Path;
 
 use crate::schema::{SegmentPage, TranslatedPage, TranslationSegment};
@@ -50,12 +51,145 @@ fn translate_idx(texts: &[String]) -> Vec<String> {
     texts.to_vec()
 }
 
+const OLLAMA_SYSTEM_PROMPT: &str = "You are a professional academic translator. Translate the given English academic paper text into Japanese. Preserve equations, symbols, citations, references, section numbers, and inline code exactly as they are. Return only the translated Japanese text. Do not add any explanation, preface, markdown, or formatting.";
+const OLLAMA_DEFAULT_WORKERS: usize = 8;
+
+fn ollama_base_url() -> String {
+    std::env::var("OLLAMA_HOST")
+        .unwrap_or_else(|_| "http://localhost:11434".to_string())
+        .trim_end_matches('/')
+        .to_string()
+}
+
+fn ollama_num_workers() -> usize {
+    std::env::var("OLLAMA_NUM_WORKERS")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .filter(|n| *n >= 1)
+        .unwrap_or(OLLAMA_DEFAULT_WORKERS)
+}
+
+fn translate_ollama_one(
+    client: &reqwest::blocking::Client,
+    text: &str,
+    ollama_model: &str,
+    url: &str,
+) -> Result<String> {
+    let payload = serde_json::json!({
+        "model": ollama_model,
+        "messages": [
+            {"role": "system", "content": OLLAMA_SYSTEM_PROMPT},
+            {"role": "user", "content": text},
+        ],
+        "stream": false,
+        "options": {
+            "temperature": 0,
+        },
+    });
+    let response = match client
+        .post(url)
+        .header("Content-Type", "application/json")
+        .json(&payload)
+        .send()
+    {
+        Ok(r) => r,
+        Err(e) => {
+            if e.is_connect() {
+                anyhow::bail!(
+                    "Ollamaサーバーに接続できませんでした ({url})。 `ollama serve` で起動しているか確認してください。"
+                );
+            }
+            return Err(e).context("Ollama API request failed");
+        }
+    };
+
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().unwrap_or_default();
+        if status.as_u16() == 404 {
+            anyhow::bail!(
+                "Ollamaモデル '{ollama_model}' が見つかりません。 `ollama pull {ollama_model}` で取得してください。"
+            );
+        }
+        anyhow::bail!("Ollama API error: {status} — {body}");
+    }
+
+    let v: serde_json::Value = response.json().context("Failed to parse Ollama response")?;
+    let content = v["message"]["content"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("Ollamaのレスポンス形式が想定と異なります: {v}"))?
+        .trim()
+        .to_string();
+    Ok(content)
+}
+
+/// Ollama の /api/chat を使い、複数テキストを並列リクエストで翻訳する。
+/// 順序は入力と同じ順で保持される。
+fn translate_ollama(texts: &[String], model_name: &str) -> Result<Vec<String>> {
+    if texts.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // `ollama:<model>` のコロン以降をOllamaモデル名として扱う
+    let ollama_model = model_name.strip_prefix("ollama:").unwrap_or(model_name);
+    let url = format!("{}/api/chat", ollama_base_url());
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(None::<std::time::Duration>)
+        .build()
+        .context("Failed to build HTTP client for Ollama")?;
+
+    // 1テキストならスレッドプールのオーバーヘッドを避ける
+    if texts.len() == 1 {
+        return Ok(vec![translate_ollama_one(
+            &client,
+            &texts[0],
+            ollama_model,
+            &url,
+        )?]);
+    }
+
+    let workers = ollama_num_workers().min(texts.len());
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(workers)
+        .build()
+        .context("Failed to build Ollama worker pool")?;
+
+    let translated = pool.install(|| {
+        texts
+            .par_iter()
+            .map(|t| translate_ollama_one(&client, t, ollama_model, &url))
+            .collect::<Result<Vec<_>>>()
+    })?;
+    Ok(translated)
+}
+
+/// 翻訳モデル名が有効か検証する。無効な場合は Err を返す。
+/// 有効: "deepl", "idx", "ollama:<model>" (例: "ollama:gemma3:4b")
+pub fn validate_model_name(model_name: &str) -> Result<()> {
+    if model_name == "idx" || model_name == "deepl" {
+        return Ok(());
+    }
+    if let Some(rest) = model_name.strip_prefix("ollama:") {
+        if rest.is_empty() {
+            anyhow::bail!(
+                "Ollamaモデル名が空です: '{model_name}'。 `ollama:<model>` 形式で指定してください (例: ollama:gemma3:4b)"
+            );
+        }
+        return Ok(());
+    }
+    anyhow::bail!(
+        "未知の翻訳モデルです: '{model_name}'。 指定可能: 'deepl', 'idx', 'ollama:<model>' (例: ollama:gemma3:4b)"
+    );
+}
+
 pub fn translate(
     seg_results: &mut [SegmentPage],
     model_name: &str,
     out_dir: &Path,
     auth_key: Option<&str>,
 ) -> Result<bool> {
+    validate_model_name(model_name)?;
     std::fs::create_dir_all(out_dir)
         .with_context(|| format!("Failed to create output dir: {out_dir:?}"))?;
 
@@ -157,6 +291,7 @@ fn do_translate(
             let key = auth_key.context("DeepL API key is required (set DEEPL_API env var)")?;
             translate_deepl(texts, "JA", key)
         }
+        m if m.starts_with("ollama:") => translate_ollama(texts, model_name),
         _ => anyhow::bail!("Unknown translation model: {model_name}"),
     }
 }

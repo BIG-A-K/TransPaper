@@ -11,13 +11,6 @@ pub enum ModelSource {
 }
 
 impl ModelSource {
-    pub fn path(&self) -> Option<&Path> {
-        match self {
-            ModelSource::Local(p) | ModelSource::HuggingFace(p) => Some(p),
-            ModelSource::Fallback => None,
-        }
-    }
-
     pub fn description(&self) -> String {
         match self {
             ModelSource::Local(p) => format!("local:{}", p.display()),

@@ -1,0 +1,6 @@
+services:
+  ollama:
+    runtime: nvidia
+    environment:
+      # 使用するGPUを1枚に制限する（allにすると全GPUにプロセスが乗る）
+      - NVIDIA_VISIBLE_DEVICES=${GPU:-0}
