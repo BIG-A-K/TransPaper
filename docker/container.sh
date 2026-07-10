@@ -32,7 +32,12 @@ function up() {
     export $(grep -v '^#' ${ENV_FILE} | xargs)
   fi
   mkdir -p "${HOME}/.ollama-transpaper"
-  docker compose -f ${COMPOSE} up -d
+  local gpu_flag=""
+  if [ "${GPU}" = "1" ]; then
+    gpu_flag="-f ${SCRIPT_DIR}/compose.gpu.yml"
+    echo "GPU mode enabled (runtime: nvidia)"
+  fi
+  docker compose -f ${COMPOSE} ${gpu_flag} up -d
 }
 
 function in_container() {
@@ -65,8 +70,8 @@ function ps() {
 }
 
 function help() {
-  echo "Usage: $0 [up|in|down|restart|build|ps|help]"
-  echo "up: Start the Docker container"
+  echo "Usage: $0 [up|in|down|restart|build|ps|help] [--gpu]"
+  echo "up: Start the Docker container (--gpu for NVIDIA GPU support)"
   echo "in: Enter the Docker container"
   echo "down: Stop and remove the Docker container"
   echo "restart: Restart the Docker container with current settings"
@@ -75,6 +80,14 @@ function help() {
   echo "help: Show this help message"
   echo ""
 }
+
+GPU=0
+for arg in "$@"; do
+  if [ "$arg" = "--gpu" ]; then
+    GPU=1
+  fi
+done
+set -- $(echo "$@" | sed 's/--gpu//g')
 
 echo "Hello!"
 if [ -z "$1" ]; then
