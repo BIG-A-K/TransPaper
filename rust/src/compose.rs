@@ -328,6 +328,9 @@ fn place_text(
     let font = mupdf_fonts_droid::cjk_font(0, false)
         .context("Droid CJK font should be available")?;
 
+    let font = mupdf_fonts_droid::cjk_font(0, false)
+        .expect("Droid CJK font should be available");
+
     for _ in 0..12 {
         let opts = TextboxOptions {
             fontsize: attempt_size,
