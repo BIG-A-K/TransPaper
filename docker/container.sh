@@ -12,6 +12,7 @@ if [ ! -f ${ENV_FILE} ]; then
   echo USER_ID=$(id -u) >> ${ENV_FILE}
   echo GROUP=$(id -gn) >> ${ENV_FILE}
   echo GROUP_ID=$(id -g) >> ${ENV_FILE}
+  echo HOME=${HOME} >> ${ENV_FILE}
   echo "CONTAINER_NAME=${CONTAINER_NAME}" >> ${ENV_FILE}
   echo "Created .env file with the following content:"
   cat ${ENV_FILE}
@@ -30,11 +31,17 @@ function up() {
   if [ -f ${ENV_FILE} ]; then
     export $(grep -v '^#' ${ENV_FILE} | xargs)
   fi
+  mkdir -p "${HOME}/.ollama-transpaper"
   docker compose -f ${COMPOSE} up -d
 }
 
 function in_container() {
-  docker compose -f ${COMPOSE} exec -it ${CONTAINER_NAME} zsh
+  local service="${1:-${CONTAINER_NAME}}"
+  local shell="zsh"
+  if [ "$service" = "ollama" ]; then
+    shell="bash"
+  fi
+  docker compose -f ${COMPOSE} exec -it ${service} ${shell}
 }
 
 function down() {
@@ -95,7 +102,7 @@ fi
 
 case "$CHOICE" in
   "up") up ;;
-  "in") in_container ;;
+  "in") in_container "$2" ;;
   "down") down ;;
   "restart") restart ;;
   "build") build ;;

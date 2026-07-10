@@ -17,6 +17,9 @@
 - Makefileの編集
 - `docker/`以下の編集
   - 開発用docker環境を変更したい場合は`AGENTS.md`に記載して相談すること
+  - 承認済み変更（2026-07-10）:
+    - ollamaコンテナをroot以外（`make`実行ユーザーのUID/GID）で起動。ボリュームは `${HOME}/.ollama-transpaper` のbind mount（`container.sh`の`up`で所有権を保つため事前作成）。
+    - `make in SERVICE=ollama` でollamaコンテナに入れるよう拡張（未指定時は従来の`agent_container`）。
 
 # コード規則
 ```

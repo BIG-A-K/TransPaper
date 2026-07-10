@@ -42,7 +42,21 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     vim \
     wget \
     x11-apps \
-    xauth
+    xauth \
+    fontconfig\
+    libfontconfig1-dev clang libclang-dev unzip zip tar
+
+
+# install Rust (stable) via rustup
+# rustup is installed into a shared CARGO_HOME/RUSTUP_HOME (matching PATH) so
+# the non-root ${USER} can also run cargo/rustc. Permissions are opened up so
+# the user can write to the registry cache etc.
+ENV CARGO_HOME=/usr/local/cargo
+ENV RUSTUP_HOME=/usr/local/rustup
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+    | CARGO_HOME=/usr/local/cargo RUSTUP_HOME=/usr/local/rustup sh -s -- -y --profile minimal \
+    && chmod -R a+rwX /usr/local/cargo /usr/local/rustup
+ENV PATH="/usr/local/cargo/bin:${PATH}"
 
 # install uv
 RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_UNMANAGED_INSTALL="/usr/local/bin" sh

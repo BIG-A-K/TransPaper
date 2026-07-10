@@ -15,7 +15,7 @@ down:
 	$(CONTAINER) down
 
 in:
-	$(CONTAINER) in
+	$(CONTAINER) in $(SERVICE)
 
 ps:
 	$(CONTAINER) ps
