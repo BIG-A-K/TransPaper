@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use mupdf::pdf::page::{InsertImageOptions, PageImageSource};
 use mupdf::pdf::PdfDocument;
 use mupdf::shape::{Shape, TextboxOptions};
-use mupdf::{CjkFontOrdering, Colorspace, ImageFormat, Matrix, Rect};
+use mupdf::{Colorspace, ImageFormat, Matrix, Rect};
 use std::collections::HashSet;
 use std::path::Path;
 
@@ -330,13 +330,16 @@ fn place_text(
     let mut attempt_size = font_size;
     let mut last_overflow: f32 = 0.0;
 
+    let font = mupdf_fonts_droid::cjk_font(0, false)
+        .expect("Droid CJK font should be available");
+
     for _ in 0..12 {
         let opts = TextboxOptions {
             fontsize: attempt_size,
             lineheight: LINE_SPACING,
-            fontname: "japan".to_owned(),
+            fontname: font.name.to_owned(),
+            fontfile: Some(font.data),
             simple: false,
-            ordering: Some(CjkFontOrdering::AdobeJapan),
             ..Default::default()
         };
 
@@ -370,9 +373,9 @@ fn place_text(
     let opts = TextboxOptions {
         fontsize: MIN_FONT_SIZE,
         lineheight: LINE_SPACING,
-        fontname: "japan".to_owned(),
+        fontname: font.name.to_owned(),
+        fontfile: Some(font.data),
         simple: false,
-        ordering: Some(CjkFontOrdering::AdobeJapan),
         ..Default::default()
     };
     let expanded = Rect::new(rect.x0, rect.y0, rect.x1, rect.y1 + last_overflow + 1.0);

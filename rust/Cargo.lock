@@ -2700,6 +2700,7 @@ dependencies = [
  "image",
  "indicatif",
  "mupdf",
+ "mupdf-fonts-droid",
  "ort",
  "reqwest",
  "serde",
