@@ -29,7 +29,8 @@ services:
     environment:
       - HOME=/home/${USER}
       - NVIDIA_VISIBLE_DEVICES=all
+      - OLLAMA_HOST=0.0.0.0
     volumes:
       - ${HOME}/.ollama-transpaper:/home/${USER}/.ollama
-    runtime: nvidia
     restart: unless-stopped
+    # For NVIDIA GPU: docker compose -f compose.yml -f compose.gpu.yml up -d

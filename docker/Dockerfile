@@ -69,11 +69,12 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
 # install codex
 RUN npm install -g @openai/codex
 
-RUN deluser ubuntu
+RUN deluser ubuntu || true
 
-RUN addgroup --gid ${GID} ${GROUP}
-RUN useradd -ms /bin/zsh -u ${UID} -g ${GID} -G sudo ${USER} &&\
-    echo ${USER}:${USER} | chpasswd
+RUN getent group ${GID} || addgroup --gid ${GID} ${GROUP}
+RUN getent passwd ${UID} \
+    || { useradd -ms /bin/zsh -u ${UID} -g ${GID} -G sudo ${USER} \
+         && echo ${USER}:${USER} | chpasswd; }
 
 USER ${USER}
 WORKDIR /home/${USER}

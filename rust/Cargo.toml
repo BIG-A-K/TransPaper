@@ -20,4 +20,5 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 indicatif = "0.17"
 anyhow = "1"
 mupdf = { version = "0.8", features = ["all-fonts"] }
+mupdf-fonts-droid = "0.8"
 rayon = "1"
