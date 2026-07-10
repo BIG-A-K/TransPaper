@@ -38,12 +38,12 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     python3-pip \
     python3-venv \
     sudo \
-    zsh\
+    zsh \
     vim \
     wget \
     x11-apps \
     xauth \
-    fontconfig\
+    fontconfig \
     libfontconfig1-dev clang libclang-dev unzip zip tar
 
 

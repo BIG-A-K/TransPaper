@@ -20,7 +20,6 @@ services:
     volumes:
       - ../:/home/${USER}/TransPaper:rw
       - ./zshrc:/home/${USER}/.zshrc:ro
-      # Persist Codex CLI auth/config across container restarts
   ollama:
     image: ollama/ollama
     user: "${USER_ID}:${GROUP_ID}"

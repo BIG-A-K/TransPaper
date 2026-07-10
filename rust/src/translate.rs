@@ -82,6 +82,9 @@ fn translate_ollama_one(
             {"role": "user", "content": text},
         ],
         "stream": false,
+        "options": {
+            "temperature": 0,
+        },
     });
     let response = match client
         .post(url)
