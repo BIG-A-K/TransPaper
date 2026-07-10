@@ -18,8 +18,9 @@
 - `docker/`以下の編集
   - 開発用docker環境を変更したい場合は`AGENTS.md`に記載して相談すること
   - 承認済み変更（2026-07-10）:
-    - ollamaコンテナをroot以外（`make`実行ユーザーのUID/GID）で起動。ボリュームは `${HOME}/.ollama-transpaper` のbind mount（`container.sh`の`up`で所有権を保つため事前作成）。
+    - ollamaコンテナをroot以外（`make`実行ユーザーのUID/GID）で起動。ボリュームは `${HOME}/.ollama-transpaper` のbind mount（`make up`で所有権を保つため事前作成）。
     - `make in SERVICE=ollama` でollamaコンテナに入れるよう拡張（未指定時は従来の`agent_container`）。
+    - `docker/container.sh` を廃止し、Makefileから `docker compose` を直接実行（2026-07-10）。GPU使用時は `make up-gpu`（`GPU=<id>` で使用GPUを指定、デフォルト 0）。`NVIDIA_VISIBLE_DEVICES=all` を廃止し指定GPUのみに制限。
 
 # コード規則
 ```
@@ -41,7 +42,7 @@ test用に`./attention_is_all_you_need.pdf`を用意してあるので、それ�
 │   └──  seg.py
 ├──  docker # 開発用docker環境の定義
 │   ├──  compose.yml
-│   ├──  container.sh
+│   ├──  compose.gpu.yml
 │   └──  Dockerfile
 ├──  docs # モジュールの説明など
 ├──  Makefile # 開発用docker環境等

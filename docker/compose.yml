@@ -28,9 +28,8 @@ services:
       - "11434:11434"
     environment:
       - HOME=/home/${USER}
-      - NVIDIA_VISIBLE_DEVICES=all
       - OLLAMA_HOST=0.0.0.0
     volumes:
       - ${HOME}/.ollama-transpaper:/home/${USER}/.ollama
     restart: unless-stopped
-    # For NVIDIA GPU: docker compose -f compose.yml -f compose.gpu.yml up -d
+    # For NVIDIA GPU: make up-gpu (GPU=<id> で使用GPUを指定、デフォルト 0)
