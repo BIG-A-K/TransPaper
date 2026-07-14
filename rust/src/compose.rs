@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use mupdf::pdf::page::{InsertImageOptions, PageImageSource};
 use mupdf::pdf::PdfDocument;
 use mupdf::shape::{Shape, TextOptions, TextboxOptions};
-use mupdf::{Colorspace, Font, ImageFormat, Matrix, Pixmap, Point, Rect};
+use mupdf::{Colorspace, Font, ImageFormat, Matrix, Pixmap, Point, Quad, Rect};
 use std::collections::HashSet;
 use std::path::Path;
 
@@ -14,7 +14,7 @@ const MAX_FONT_SIZE: f32 = 28.0;
 const COVER_PADDING: f32 = 1.2;
 const LINE_SPACING: f32 = 1.05;
 const DEDUP_IOS_THRESHOLD: f32 = 0.6;
-const INLINE_MATH_ZOOM: f32 = 2.0;
+const INLINE_MATH_ZOOM: f32 = 6.0;
 
 pub struct ComposeResult {
     pub segment_count: usize,
@@ -673,10 +673,10 @@ fn place_inline_math_segment(
         mupdf_fonts_droid::cjk_font(0, false).context("Droid CJK font should be available")?;
     let measure_font = Font::from_bytes_with_index(font_data.name, font_data.index, font_data.data)
         .context("Failed to load CJK font for inline math layout")?;
-    let mut attempt_size = font_size;
+    let mut attempt_size = font_size * 0.9;
     let mut items = Vec::new();
     let mut fits = false;
-    for _ in 0..12 {
+    for _ in 0..14 {
         let Some(mut attempt_items) =
             make_inline_items(text, inline_math, &measure_font, attempt_size, rect.width())
         else {
@@ -753,8 +753,16 @@ fn place_inline_math_segment(
         let pixel_rect = source_rect.transform(&scale);
         let crop_width = pixel_rect.width().ceil().max(1.0) as i32;
         let crop_height = pixel_rect.height().ceil().max(1.0) as i32;
+        // fz_warp_pixmap expects corners clockwise from NW: NW, NE, SE, SW.
+        // Rect::quad() produces NW, NE, SW, SE (ll/lr swapped), so build manually.
+        let warp_quad = Quad::new(
+            Point::new(pixel_rect.x0, pixel_rect.y0),
+            Point::new(pixel_rect.x1, pixel_rect.y0),
+            Point::new(pixel_rect.x1, pixel_rect.y1),
+            Point::new(pixel_rect.x0, pixel_rect.y1),
+        );
         let cropped = source_pixmap
-            .warp(pixel_rect, crop_width, crop_height)
+            .warp(warp_quad, crop_width, crop_height)
             .context("Failed to crop source inline math")?;
         let mut png = Vec::new();
         cropped.write_to(&mut png, ImageFormat::PNG)?;
