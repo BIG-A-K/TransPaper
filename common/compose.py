@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,6 +31,7 @@ class ComposeOptions:
     dedup_enabled: bool = True
     dedup_ios_threshold: float = 0.6
     max_logged_warnings: int = 50
+    inline_math_zoom: float = 2.0
 
 
 @dataclass
@@ -125,6 +127,35 @@ def compose_pdf(
                     if not text:
                         continue
                     font_size = _determine_font_size(segment, opts)
+
+                    inline_math = segment.get("inline_math") or []
+                    if inline_math:
+                        for warning in segment.get("translation_warnings") or []:
+                            record_warning(
+                                f"{warning} (page={page_number}, id={segment.get('id')})"
+                            )
+                        inline_placed = _place_inline_math_segment(
+                            page=page,
+                            src_page=src_page,
+                            page_rect=page_rect,
+                            rect=rect,
+                            text=text,
+                            inline_math=inline_math,
+                            font=font,
+                            font_size=font_size,
+                            opts=opts,
+                            record_warning=record_warning,
+                            segment_id=segment.get("id"),
+                            page_number=page_number,
+                        )
+                        if inline_placed is not None:
+                            if inline_placed:
+                                segment_count += 1
+                            continue
+                        for math in inline_math:
+                            placeholder = str(math.get("placeholder") or "")
+                            if placeholder:
+                                text = text.replace(placeholder, str(math.get("text") or ""))
 
                     placed = False
                     attempt_size = font_size
@@ -356,6 +387,237 @@ def _place_region_snapshot(
     return True
 
 
+@dataclass
+class _InlineLayoutItem:
+    kind: str
+    width: float
+    height: float
+    ascent: float
+    descent: float
+    text: str = ""
+    math: Mapping[str, object] | None = None
+    x: float = 0.0
+    y: float = 0.0
+    baseline: float = 0.0
+
+
+def _split_inline_text(text: str) -> list[str]:
+    return re.findall(r"\s+|[A-Za-z0-9]+(?:[./:_-][A-Za-z0-9]+)*|.", text, re.DOTALL)
+
+
+def _math_dimensions(math: Mapping[str, object], font_size: float, max_width: float) -> tuple[float, float, float]:
+    bbox = math.get("bbox")
+    if bbox and len(bbox) == 4:
+        original_width = max(float(bbox[2]) - float(bbox[0]), 0.1)
+        original_height = max(float(bbox[3]) - float(bbox[1]), 0.1)
+    else:
+        original_width = font_size
+        original_height = font_size
+    source_font_size = math.get("font_size")
+    if isinstance(source_font_size, (int, float)) and source_font_size > 0:
+        height = original_height * font_size / float(source_font_size)
+    else:
+        height = font_size
+    height = max(font_size * 0.75, min(font_size * 1.8, height))
+    width = height * original_width / original_height
+    if width > max_width:
+        scale = max_width / width
+        width *= scale
+        height *= scale
+    baseline = math.get("baseline")
+    if isinstance(baseline, (int, float)) and bbox and len(bbox) == 4:
+        baseline_ratio = (float(baseline) - float(bbox[1])) / original_height
+    else:
+        baseline_ratio = 0.8
+    return width, height, max(0.55, min(0.95, baseline_ratio))
+
+
+def _make_inline_items(
+    text: str,
+    inline_math: Sequence[Mapping[str, object]],
+    font: fitz.Font,
+    font_size: float,
+    max_width: float,
+) -> list[_InlineLayoutItem] | None:
+    math_by_placeholder = {
+        str(item.get("placeholder")): item
+        for item in inline_math
+        if item.get("placeholder")
+    }
+    if not math_by_placeholder or any(
+        text.count(placeholder) != 1 for placeholder in math_by_placeholder
+    ):
+        return None
+    pattern = "(" + "|".join(
+        re.escape(placeholder)
+        for placeholder in sorted(math_by_placeholder, key=len, reverse=True)
+    ) + ")"
+    parts = re.split(pattern, text)
+    items: list[_InlineLayoutItem] = []
+    for part in parts:
+        if not part:
+            continue
+        math = math_by_placeholder.get(part)
+        if math is not None:
+            width, height, baseline_ratio = _math_dimensions(math, font_size, max_width)
+            ascent = height * baseline_ratio
+            items.append(
+                _InlineLayoutItem(
+                    kind="math",
+                    width=width,
+                    height=height,
+                    ascent=ascent,
+                    descent=height - ascent,
+                    math=math,
+                )
+            )
+            continue
+        for token in _split_inline_text(part):
+            width = font.text_length(token, fontsize=font_size)
+            if width > max_width and len(token) > 1 and not token.isspace():
+                sub_tokens = list(token)
+            else:
+                sub_tokens = [token]
+            for sub_token in sub_tokens:
+                sub_width = font.text_length(sub_token, fontsize=font_size)
+                items.append(
+                    _InlineLayoutItem(
+                        kind="space" if sub_token.isspace() else "text",
+                        width=sub_width,
+                        height=font_size,
+                        ascent=font_size * 0.82,
+                        descent=font_size * 0.18,
+                        text=sub_token,
+                    )
+                )
+    return items
+
+
+def _layout_inline_items(
+    items: list[_InlineLayoutItem],
+    rect: fitz.Rect,
+    font_size: float,
+    line_spacing: float,
+) -> bool:
+    lines: list[list[_InlineLayoutItem]] = []
+    line: list[_InlineLayoutItem] = []
+    line_width = 0.0
+    for item in items:
+        if item.kind == "space" and not line:
+            continue
+        if line and line_width + item.width > rect.width:
+            while line and line[-1].kind == "space":
+                line.pop()
+            if line:
+                lines.append(line)
+            line = []
+            line_width = 0.0
+            if item.kind == "space":
+                continue
+        line.append(item)
+        line_width += item.width
+    while line and line[-1].kind == "space":
+        line.pop()
+    if line:
+        lines.append(line)
+
+    y = rect.y0
+    for current_line in lines:
+        ascent = max(item.ascent for item in current_line)
+        descent = max(item.descent for item in current_line)
+        line_height = max(ascent + descent, font_size * line_spacing)
+        baseline = y + ascent
+        x = rect.x0
+        for item in current_line:
+            item.x = x
+            item.baseline = baseline
+            item.y = baseline - item.ascent
+            x += item.width
+        y += line_height
+    return y <= rect.y1 + 0.01
+
+
+def _place_inline_math_segment(
+    *,
+    page: fitz.Page,
+    src_page: fitz.Page,
+    page_rect: fitz.Rect,
+    rect: fitz.Rect,
+    text: str,
+    inline_math: Sequence[Mapping[str, object]],
+    font: fitz.Font,
+    font_size: float,
+    opts: ComposeOptions,
+    record_warning: Callable[[str], None],
+    segment_id: object,
+    page_number: int,
+) -> bool | None:
+    """Place mixed translated text and source formula snapshots.
+
+    ``None`` means metadata is inconsistent and lets the caller use legacy text
+    placement. ``False`` means no drawable item could be placed.
+    """
+    attempt_size = font_size
+    items: list[_InlineLayoutItem] | None = None
+    fits = False
+    for _ in range(12):
+        items = _make_inline_items(text, inline_math, font, attempt_size, rect.width)
+        if items is None:
+            record_warning(
+                f"文中数式プレースホルダーが不正なためテキスト配置へフォールバック "
+                f"(page={page_number}, id={segment_id})"
+            )
+            return None
+        fits = _layout_inline_items(items, rect, attempt_size, opts.line_spacing)
+        if fits or attempt_size <= opts.min_font_size + 0.1:
+            break
+        attempt_size = max(opts.min_font_size, attempt_size * 0.9)
+    if not items:
+        return False
+    if not fits:
+        record_warning(
+            f"文中数式を含むテキストが収まりきりませんでした "
+            f"(page={page_number}, id={segment_id})"
+        )
+
+    writer = fitz.TextWriter(page_rect)
+    drawn = False
+    for item in items:
+        if item.y + item.height > rect.y1 + 0.01:
+            continue
+        if item.kind == "text":
+            writer.append(
+                (item.x, item.baseline),
+                item.text,
+                font=font,
+                fontsize=attempt_size,
+            )
+            drawn = True
+        elif item.kind == "math" and item.math is not None:
+            source_bbox = item.math.get("bbox")
+            if not source_bbox or len(source_bbox) != 4:
+                continue
+            source_rect = fitz.Rect(source_bbox) & src_page.rect
+            dest_rect = fitz.Rect(item.x, item.y, item.x + item.width, item.y + item.height) & rect
+            if source_rect.is_empty or dest_rect.is_empty:
+                continue
+            try:
+                pix = src_page.get_pixmap(
+                    matrix=fitz.Matrix(opts.inline_math_zoom, opts.inline_math_zoom),
+                    clip=source_rect,
+                    alpha=False,
+                )
+                page.insert_image(dest_rect, pixmap=pix, overlay=True)
+                drawn = True
+            except RuntimeError as exc:
+                record_warning(
+                    f"文中数式の切り出しに失敗しました "
+                    f"(page={page_number}, id={segment_id}): {exc}"
+                )
+    writer.write_text(page, color=opts.text_color, overlay=True)
+    return drawn
+
+
 def _load_translated_pages(
     translated: Sequence[TranslatedPage] | Path | str,
 ) -> list[TranslatedPage]:
@@ -393,7 +655,12 @@ def _determine_font_size(segment: Mapping[str, object], opts: ComposeOptions) ->
         src_chars = segment.get("char_count")
         if not isinstance(src_chars, (int, float)) or src_chars <= 0:
             src_chars = len(segment.get("source_text") or "")
-        tgt_len = len(segment.get("translated_text") or "")
+        visible_text = str(segment.get("translated_text") or "")
+        for math in segment.get("inline_math") or []:
+            placeholder = str(math.get("placeholder") or "")
+            if placeholder:
+                visible_text = visible_text.replace(placeholder, str(math.get("text") or ""))
+        tgt_len = len(visible_text)
         if src_chars:
             ratio = tgt_len / max(float(src_chars), 1.0)
             if ratio > 1.0:

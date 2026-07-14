@@ -79,7 +79,45 @@ DocLayout-YOLO が出力するラベルは、次のルールで標準タイプ�
 
 ## テキスト抽出
 
-`text` および `caption` タイプのセグメントには、PyMuPDF の `get_textbox()` を用いて該当領域のテキストを抽出し、`meta.text` フィールドに格納します。
+`text` および `caption` タイプのセグメントには、PyMuPDF の `rawdict` を用いて該当領域のテキストを抽出し、`meta.text` フィールドに格納します。
+
+Rust版はMuPDFの `TextPage` 文字単位APIを使用し、Python版と同じプレースホルダーと `inline_math` 構造を出力します。
+
+### 文中数式の保護
+
+本文・caption 内の文中数式は、翻訳前に `[[TRANSPAPER_INLINE_MATH_0001]]` のような固定形式のプレースホルダーへ置換します。独立した `math` ブロックの扱いは従来どおりです。
+
+検出には span / char 単位の次の情報を組み合わせます。
+
+- Computer Modern の数式用フォント（CMMI/CMSY/CMEX）、STIX Math、Latin Modern Math など
+- 数学記号、ギリシャ文字
+- 数式に隣接する短い英数字・演算子
+- 既に数式と判定された run に隣接する上付き・下付き run
+
+通常の英単語や単独の脚注番号を数式にしないため、Times/Helveticaなどの通常フォント、上付き属性だけでは数式と判定しません。
+
+各数式の表示情報は `meta.inline_math` に保存します。
+
+```json
+{
+  "text": "The shape is [[TRANSPAPER_INLINE_MATH_0001]].",
+  "inline_math_status": "protected",
+  "inline_math": [
+    {
+      "id": "m0001",
+      "placeholder": "[[TRANSPAPER_INLINE_MATH_0001]]",
+      "text": "H×W",
+      "bbox": [120.0, 80.0, 143.0, 92.0],
+      "baseline": 90.0,
+      "fonts": ["CMR10", "CMSY10", "CMMI10"],
+      "font_size": 10.0,
+      "line_index": 0
+    }
+  ]
+}
+```
+
+検出はPython版・Rust版とも保守的なヒューリスティックです。フォント情報を持たない画像PDF、アウトライン化された数式、通常フォントだけで構成された単純な変数は検出できない場合があります。
 
 ## 座標系
 

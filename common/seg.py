@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from collections import Counter
 from collections.abc import Sequence
@@ -45,7 +46,245 @@ except ImportError:  # pragma: no cover - handled at runtime
 if __package__ is None:  # pragma: no cover - package-relative import fallback
     sys.path.append(str(Path(__file__).resolve().parent.parent))
 
-from common.schema import SegmentBlock, SegmentPage
+from common.schema import InlineMath, SegmentBlock, SegmentPage
+
+INLINE_MATH_PLACEHOLDER_TEMPLATE = "[[TRANSPAPER_INLINE_MATH_{index:04d}]]"
+_STRONG_MATH_FONT_RE = re.compile(
+    r"(?:cmmi|cmsy|cmex|msam|msbm|stix.*math|mathjax|latinmodernmath|"
+    r"asana[-_ ]?math|xits[-_ ]?math|texgyre.*math|mt[-_ ]?extra)",
+    re.IGNORECASE,
+)
+_GREEK_RANGES = ((0x0370, 0x03FF), (0x1D6A8, 0x1D7CB))
+_MATH_SYMBOL_RANGES = ((0x2190, 0x22FF), (0x2308, 0x230B), (0x27E6, 0x27EF))
+_MATH_SYMBOL_CODEPOINTS = frozenset(
+    {0x00B1, 0x00D7, 0x00F7, 0x2102, 0x2113, 0x2115, 0x211A, 0x211D, 0x2124}
+)
+_FORMULA_CONNECTORS = frozenset("+-=*/<>^_|()[]{}.,:'\u2032\u2033")
+
+
+@dataclass
+class _TextRun:
+    text: str
+    bbox: tuple[float, float, float, float]
+    font: str
+    size: float
+    baseline: float
+    flags: int
+
+
+def _span_text(span: dict[str, Any]) -> str:
+    text = span.get("text") or ""
+    if text:
+        return str(text)
+    return "".join(str(ch.get("c", "")) for ch in span.get("chars") or [])
+
+
+def _span_bbox(span: dict[str, Any]) -> tuple[float, float, float, float] | None:
+    chars = span.get("chars") or []
+    char_boxes = [ch.get("bbox") for ch in chars if ch.get("bbox")]
+    if char_boxes:
+        return (
+            min(float(box[0]) for box in char_boxes),
+            min(float(box[1]) for box in char_boxes),
+            max(float(box[2]) for box in char_boxes),
+            max(float(box[3]) for box in char_boxes),
+        )
+    bbox = span.get("bbox")
+    if bbox and len(bbox) == 4:
+        return tuple(float(value) for value in bbox)
+    return None
+
+
+def _span_baseline(span: dict[str, Any], bbox: tuple[float, float, float, float]) -> float:
+    origins = [ch.get("origin") for ch in span.get("chars") or [] if ch.get("origin")]
+    if origins:
+        return float(sum(float(origin[1]) for origin in origins) / len(origins))
+    origin = span.get("origin")
+    if origin and len(origin) >= 2:
+        return float(origin[1])
+    return bbox[3]
+
+
+def _is_math_symbol(char: str) -> bool:
+    codepoint = ord(char)
+    if codepoint in _MATH_SYMBOL_CODEPOINTS:
+        return True
+    ranges = _GREEK_RANGES + _MATH_SYMBOL_RANGES
+    return any(start <= codepoint <= end for start, end in ranges)
+
+
+def _is_strong_math_run(run: _TextRun) -> bool:
+    stripped = run.text.strip()
+    if not stripped:
+        return False
+    if _STRONG_MATH_FONT_RE.search(run.font):
+        return True
+    # A normal-font prose span can contain an arrow or a Greek character. Treat
+    # symbols as strong evidence only when the whole run is short and
+    # formula-shaped, otherwise a single symbol could protect an entire sentence.
+    return _is_formula_context_run(run) and any(_is_math_symbol(char) for char in stripped)
+
+
+def _is_formula_context_run(run: _TextRun) -> bool:
+    """Return whether a short neighbouring run can safely belong to a formula."""
+    text = run.text.strip()
+    if not text or len(text) > 8:
+        return False
+    if text != run.text:
+        return False
+    if not all(char.isalnum() or _is_math_symbol(char) or char in _FORMULA_CONNECTORS for char in text):
+        return False
+    alpha_count = sum(char.isalpha() and not _is_math_symbol(char) for char in text)
+    return alpha_count <= 2
+
+
+def _runs_are_close(left: _TextRun, right: _TextRun) -> bool:
+    gap = right.bbox[0] - left.bbox[2]
+    return gap <= max(left.size, right.size, 1.0) * 0.45
+
+
+def _inline_math_groups(runs: list[_TextRun]) -> list[tuple[int, int]]:
+    strong = {index for index, run in enumerate(runs) if _is_strong_math_run(run)}
+    if not strong:
+        return []
+
+    selected = set(strong)
+    for index in tuple(strong):
+        cursor = index - 1
+        while cursor >= 0:
+            if not _is_formula_context_run(runs[cursor]) or not _runs_are_close(
+                runs[cursor], runs[cursor + 1]
+            ):
+                break
+            selected.add(cursor)
+            cursor -= 1
+        cursor = index + 1
+        while cursor < len(runs):
+            if not _is_formula_context_run(runs[cursor]) or not _runs_are_close(
+                runs[cursor - 1], runs[cursor]
+            ):
+                break
+            selected.add(cursor)
+            cursor += 1
+
+    # Superscript / subscript runs are weak evidence. Include them only next to an
+    # already recognised formula so citation markers and footnotes are not captured.
+    for index, run in enumerate(runs):
+        if not (run.flags & fitz.TEXT_FONT_SUPERSCRIPT) or not _is_formula_context_run(run):
+            continue
+        neighbours = (index - 1, index + 1)
+        if any(neighbour in selected for neighbour in neighbours):
+            selected.add(index)
+
+    groups: list[tuple[int, int]] = []
+    for index in sorted(selected):
+        if not groups or index > groups[-1][1] + 1:
+            groups.append((index, index))
+        else:
+            groups[-1] = (groups[-1][0], index)
+    return groups
+
+
+def _normalise_extracted_text(text: str) -> str:
+    text = text.strip()
+    if not text:
+        return ""
+    return " ".join(text.replace("-\n", "").replace("\n", " ").split())
+
+
+def _extract_text_metadata_from_raw(raw: dict[str, Any]) -> dict[str, Any]:
+    text_parts: list[str] = []
+    fonts: list[str] = []
+    sizes: list[float] = []
+    inline_math: list[InlineMath] = []
+    math_index = 1
+
+    for block in raw.get("blocks", []):
+        if block.get("type") != 0:
+            continue
+        for line_index, line in enumerate(block.get("lines", [])):
+            runs: list[_TextRun] = []
+            for span in line.get("spans", []):
+                text = _span_text(span)
+                bbox = _span_bbox(span)
+                if not text or bbox is None:
+                    continue
+                font = str(span.get("font", ""))
+                size = float(span.get("size", 0.0))
+                runs.append(
+                    _TextRun(
+                        text=text,
+                        bbox=bbox,
+                        font=font,
+                        size=size,
+                        baseline=_span_baseline(span, bbox),
+                        flags=int(span.get("flags", 0)),
+                    )
+                )
+                fonts.append(font)
+                sizes.append(size)
+            if not runs:
+                continue
+
+            groups = _inline_math_groups(runs)
+            group_by_start = {start: end for start, end in groups}
+            line_parts: list[str] = []
+            run_index = 0
+            while run_index < len(runs):
+                group_end = group_by_start.get(run_index)
+                if group_end is None:
+                    line_parts.append(runs[run_index].text)
+                    run_index += 1
+                    continue
+                group = runs[run_index : group_end + 1]
+                placeholder = INLINE_MATH_PLACEHOLDER_TEMPLATE.format(index=math_index)
+                while placeholder in "".join(run.text for run in runs):
+                    math_index += 1
+                    placeholder = INLINE_MATH_PLACEHOLDER_TEMPLATE.format(index=math_index)
+                math_bbox = (
+                    min(run.bbox[0] for run in group),
+                    min(run.bbox[1] for run in group),
+                    max(run.bbox[2] for run in group),
+                    max(run.bbox[3] for run in group),
+                )
+                inline_math.append(
+                    {
+                        "id": f"m{math_index:04d}",
+                        "placeholder": placeholder,
+                        "text": "".join(run.text for run in group),
+                        "bbox": math_bbox,
+                        "baseline": float(sum(run.baseline for run in group) / len(group)),
+                        "fonts": list(dict.fromkeys(run.font for run in group if run.font)),
+                        "font_size": float(sum(run.size for run in group) / len(group)),
+                        "line_index": line_index,
+                    }
+                )
+                line_parts.append(placeholder)
+                math_index += 1
+                run_index = group_end + 1
+            text_parts.append("".join(line_parts))
+            text_parts.append("\n")
+
+    text = _normalise_extracted_text("".join(text_parts))
+    if not text:
+        return {}
+    display_text = text
+    for math in inline_math:
+        display_text = display_text.replace(math["placeholder"], math["text"])
+    meta: dict[str, Any] = {
+        "text": text,
+        "text_preview": text[:200],
+        "char_count": len(display_text),
+    }
+    if sizes:
+        meta["avg_font_size"] = float(sum(sizes) / len(sizes))
+    if fonts:
+        meta["fonts_top"] = list(Counter(fonts).most_common(3))
+    if inline_math:
+        meta["inline_math"] = inline_math
+        meta["inline_math_status"] = "protected"
+    return meta
+
 
 # TODO: DocLayout-YOLOのラベルセットに合わせて調整する
 DOC_LAYOUT_CAPTION_CLASSES = {
@@ -133,48 +372,7 @@ def _extract_text_metadata(
 ) -> dict[str, Any]:
     rect = fitz.Rect(bbox)
     raw = page.get_text("rawdict", clip=rect)
-
-    text_parts: list[str] = []
-    fonts: list[str] = []
-    sizes: list[float] = []
-
-    for block in raw.get("blocks", []):
-        if block.get("type") != 0:
-            continue
-        for line in block.get("lines", []):
-            line_buffer: list[str] = []
-            for span in line.get("spans", []):
-                text_val = span.get("text") or ""
-                if not text_val:
-                    chars = span.get("chars") or []
-                    text_val = "".join(ch.get("c", "") for ch in chars)
-                if not text_val:
-                    continue
-                line_buffer.append(text_val)
-                fonts.append(span.get("font", ""))
-                sizes.append(float(span.get("size", 0)))
-            if line_buffer:
-                text_parts.append("".join(line_buffer))
-                text_parts.append("\n")
-
-    text = "".join(text_parts).strip()
-    if text:
-        text = text.replace("-\n", "")
-        text = text.replace("\n", " ")
-        text = " ".join(text.split())
-    if not text:
-        return {}
-
-    meta: dict[str, Any] = {
-        "text": text,
-        "text_preview": text[:200],
-        "char_count": len(text),
-    }
-    if sizes:
-        meta["avg_font_size"] = float(sum(sizes) / len(sizes))
-    if fonts:
-        meta["fonts_top"] = list(Counter(fonts).most_common(3))
-    return meta
+    return _extract_text_metadata_from_raw(raw)
 
 
 def _clamp_bbox(

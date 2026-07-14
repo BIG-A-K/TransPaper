@@ -8,6 +8,17 @@ NumericBBox = tuple[float, float, float, float]
 FontCount = tuple[str, int]
 
 
+class InlineMath(TypedDict, total=False):
+    id: str
+    placeholder: str
+    text: str
+    bbox: NumericBBox
+    baseline: float
+    fonts: Sequence[str]
+    font_size: float
+    line_index: int
+
+
 class PageSize(TypedDict):
     width: float
     height: float
@@ -22,6 +33,9 @@ class TextBlockMeta(TypedDict, total=False):
     math_font_ratio: float
     fonts_top: Sequence[FontCount]
     span_fonts: Sequence[FontCount]
+    inline_math: Sequence[InlineMath]
+    inline_math_status: str
+    translation_warnings: Sequence[str]
 
 
 class ImageBlockMeta(TypedDict, total=False):
@@ -59,6 +73,9 @@ class TranslationSegment(TypedDict, total=False):
     source_text: NotRequired[str]
     char_count: NotRequired[int]
     avg_font_size: NotRequired[float]
+    inline_math: NotRequired[Sequence[InlineMath]]
+    inline_math_status: NotRequired[str]
+    translation_warnings: NotRequired[Sequence[str]]
     translated_text: str
 
 
@@ -70,6 +87,7 @@ class TranslatedPage(TypedDict, total=False):
 __all__ = [
     "FontCount",
     "ImageBlockMeta",
+    "InlineMath",
     "NumericBBox",
     "PageSize",
     "SegmentBlock",

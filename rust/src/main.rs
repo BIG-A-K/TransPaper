@@ -8,7 +8,10 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
-#[command(name = "transpaper", about = "Translate English PDF papers to Japanese")]
+#[command(
+    name = "transpaper",
+    about = "Translate English PDF papers to Japanese"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
@@ -19,13 +22,22 @@ struct Cli {
     #[arg(short, long, help = "Output PDF file path")]
     output: Option<PathBuf>,
 
-    #[arg(short, long, default_value = "deepl", help = "Translation model (deepl, idx, ollama:<model>)")]
+    #[arg(
+        short,
+        long,
+        default_value = "deepl",
+        help = "Translation model (deepl, idx, ollama:<model>)"
+    )]
     model: String,
 
     #[arg(short, long, default_value_t = false, help = "Create comparison PDF")]
     compare: bool,
 
-    #[arg(long, default_value_t = false, help = "Disable duplicate segment deduplication")]
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Disable duplicate segment deduplication"
+    )]
     no_dedup: bool,
 }
 
@@ -108,9 +120,11 @@ fn run_pipeline(
     println!("({}/{n}) Segmentation...", 1);
     let seg_dir = working_dir.join("segments");
     let mut seg_results = seg::segment_pdf(input, &seg_dir, 150, 0.25, None)?;
-    println!("  → {} pages, {} blocks detected",
+    println!(
+        "  → {} pages, {} blocks detected",
         seg_results.len(),
-        seg_results.iter().map(|p| p.blocks.len()).sum::<usize>());
+        seg_results.iter().map(|p| p.blocks.len()).sum::<usize>()
+    );
 
     // Extract text metadata
     let meta_doc = mupdf::Document::open(input.to_str().unwrap())?;
@@ -156,8 +170,12 @@ fn run_pipeline(
         output_path.clone()
     };
 
-    let compose_result =
-        compose::compose_pdf(input, &translated_pages, &translated_pdf_path, dedup_enabled)?;
+    let compose_result = compose::compose_pdf(
+        input,
+        &translated_pages,
+        &translated_pdf_path,
+        dedup_enabled,
+    )?;
     println!("  → {} segments placed", compose_result.segment_count);
     if !compose_result.warnings.is_empty() {
         println!("  ⚠ {} warnings", compose_result.warnings.len());

@@ -36,15 +36,19 @@ test用に`./attention_is_all_you_need.pdf`を用意してあるので、それ�
 <!-- ここを適宜更新しておいてください -->
 ```
  .
-├──  AGENT.md
+├──  AGENTS.md
 ├──  claude.md
 ├──  common #mainから呼び出すコード群
-│   └──  seg.py
+│   ├──  compose.py
+│   ├──  schema.py
+│   ├──  seg.py
+│   └──  translate.py
 ├──  docker # 開発用docker環境の定義
 │   ├──  compose.yml
 │   ├──  compose.gpu.yml
 │   └──  Dockerfile
 ├──  docs # モジュールの説明など
+├──  tests # Python版のユニットテスト
 ├──  Makefile # 開発用docker環境等
 ├──  out # ここにtmpファイルを入れる
 ├──  pyproject.toml

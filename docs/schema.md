@@ -8,6 +8,7 @@ PDF 翻訳パイプラインでやり取りされる JSON 構造を型として�
 - `TextBlockMeta` / `ImageBlockMeta`: ブロックごとの補助情報。テキスト系は原文テキストやフォント統計値、画像系は抽出経路などを含みます。
 - `TranslatedPage`: 翻訳済みセグメントをページ単位でまとめた構造。`compose_pdf` などの後段処理が期待する JSON 形式と一致します。
 - `TranslationSegment`: 翻訳セグメント 1 件を表す辞書。原文テキスト関連のメタ情報に加え、`translated_text` を必須フィールドとしています。
+- `InlineMath`: 文中数式1件のプレースホルダー、原文字列、原稿bbox、baseline、フォント情報を表します。`TextBlockMeta.inline_math` から `TranslationSegment.inline_math` へ伝播します。Python版の `common/schema.py` とRust版の `rust/src/schema.rs` は同じJSONフィールド名を使用します。
 
 ## セグメント JSON の例
 ```json

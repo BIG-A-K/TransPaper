@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use rayon::prelude::*;
 use std::path::Path;
 
-use crate::schema::{SegmentPage, TranslatedPage, TranslationSegment};
+use crate::schema::{SegmentPage, TextBlockMeta, TranslatedPage, TranslationSegment};
 
 const DEEPL_API_URL: &str = "https://api-free.deepl.com/v2/translate";
 const BATCH_THRESHOLD: usize = 50;
@@ -17,11 +17,7 @@ struct DeepLTranslation {
     text: String,
 }
 
-fn translate_deepl(
-    texts: &[String],
-    target_lang: &str,
-    auth_key: &str,
-) -> Result<Vec<String>> {
+fn translate_deepl(texts: &[String], target_lang: &str, auth_key: &str) -> Result<Vec<String>> {
     if texts.is_empty() {
         return Ok(Vec::new());
     }
@@ -51,7 +47,7 @@ fn translate_idx(texts: &[String]) -> Vec<String> {
     texts.to_vec()
 }
 
-const OLLAMA_SYSTEM_PROMPT: &str = "You are a professional academic translator. Translate the given English academic paper text into Japanese. Preserve equations, symbols, citations, references, section numbers, and inline code exactly as they are. Return only the translated Japanese text. Do not add any explanation, preface, markdown, or formatting.";
+const OLLAMA_SYSTEM_PROMPT: &str = "You are a professional academic translator. Translate the given English academic paper text into Japanese. Preserve equations, symbols, citations, references, section numbers, and inline code exactly as they are. Tokens such as [[TRANSPAPER_INLINE_MATH_0001]] and [[TRANSPAPER_INLINE_MATH_0002]] are immutable placeholders: copy every such token exactly once without changing any character. Return only the translated Japanese text. Do not add any explanation, preface, markdown, or formatting.";
 const OLLAMA_DEFAULT_WORKERS: usize = 8;
 
 fn ollama_base_url() -> String {
@@ -164,6 +160,36 @@ fn translate_ollama(texts: &[String], model_name: &str) -> Result<Vec<String>> {
     Ok(translated)
 }
 
+fn store_translation_result(meta: &mut TextBlockMeta, translated: String) {
+    let expected: Vec<String> = meta
+        .inline_math
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .filter(|math| !math.placeholder.is_empty())
+        .map(|math| math.placeholder.clone())
+        .collect();
+    if expected.is_empty() {
+        meta.translated_text = Some(translated);
+        return;
+    }
+
+    let all_preserved = expected
+        .iter()
+        .all(|placeholder| translated.matches(placeholder).count() == 1);
+    if all_preserved {
+        meta.translated_text = Some(translated);
+        meta.inline_math_status = Some("preserved".to_string());
+        return;
+    }
+
+    meta.translated_text = Some(meta.text.clone().unwrap_or(translated));
+    meta.inline_math_status = Some("fallback_source".to_string());
+    meta.translation_warnings
+        .get_or_insert_with(Vec::new)
+        .push("文中数式プレースホルダーが翻訳で壊れたため原文へフォールバックしました".to_string());
+}
+
 /// 翻訳モデル名が有効か検証する。無効な場合は Err を返す。
 /// 有効: "deepl", "idx", "ollama:<model>" (例: "ollama:gemma3:4b")
 pub fn validate_model_name(model_name: &str) -> Result<()> {
@@ -240,7 +266,7 @@ pub fn translate(
                     }
                     batch_texts.clear();
                 }
-                let translated = do_translate(&[text.clone()], model_name, auth_key)?;
+                let translated = do_translate(std::slice::from_ref(text), model_name, auth_key)?;
                 if let Some(tr) = translated.into_iter().next() {
                     translations.push((*idx, tr));
                 }
@@ -256,7 +282,7 @@ pub fn translate(
         // Apply translations
         for (idx, tr) in translations {
             if let Some(meta) = seg_page.blocks[idx].meta.as_mut() {
-                meta.translated_text = Some(tr);
+                store_translation_result(meta, tr);
             }
         }
 
@@ -280,11 +306,7 @@ pub fn translate(
     Ok(true)
 }
 
-fn do_translate(
-    texts: &[String],
-    model_name: &str,
-    auth_key: Option<&str>,
-) -> Result<Vec<String>> {
+fn do_translate(texts: &[String], model_name: &str, auth_key: Option<&str>) -> Result<Vec<String>> {
     match model_name {
         "idx" => Ok(translate_idx(texts)),
         "deepl" => {
@@ -328,6 +350,9 @@ pub fn collect_translated_pages(translated_dir: &Path) -> Result<Vec<TranslatedP
                     char_count: None,
                     avg_font_size: None,
                     translated_text: None,
+                    inline_math: None,
+                    inline_math_status: None,
+                    translation_warnings: None,
                 });
                 continue;
             }
@@ -342,6 +367,9 @@ pub fn collect_translated_pages(translated_dir: &Path) -> Result<Vec<TranslatedP
                     char_count: None,
                     avg_font_size: None,
                     translated_text: translated,
+                    inline_math: None,
+                    inline_math_status: None,
+                    translation_warnings: None,
                 });
                 continue;
             }
@@ -362,6 +390,9 @@ pub fn collect_translated_pages(translated_dir: &Path) -> Result<Vec<TranslatedP
                 char_count: meta.and_then(|m| m.char_count),
                 avg_font_size: meta.and_then(|m| m.avg_font_size),
                 translated_text: Some(translated),
+                inline_math: meta.and_then(|m| m.inline_math.clone()),
+                inline_math_status: meta.and_then(|m| m.inline_math_status.clone()),
+                translation_warnings: meta.and_then(|m| m.translation_warnings.clone()),
             });
         }
 
@@ -372,4 +403,54 @@ pub fn collect_translated_pages(translated_dir: &Path) -> Result<Vec<TranslatedP
     }
 
     Ok(pages)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::schema::InlineMath;
+
+    fn protected_meta() -> TextBlockMeta {
+        let placeholder = "[[TRANSPAPER_INLINE_MATH_0001]]".to_string();
+        TextBlockMeta {
+            text: Some(format!("shape {placeholder}")),
+            inline_math: Some(vec![InlineMath {
+                id: "m0001".to_string(),
+                placeholder,
+                text: "H×W".to_string(),
+                bbox: (50.0, 10.0, 70.0, 22.0),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn translation_preserves_valid_inline_math_placeholder() {
+        let mut meta = protected_meta();
+        store_translation_result(
+            &mut meta,
+            "形状は [[TRANSPAPER_INLINE_MATH_0001]] です".to_string(),
+        );
+
+        assert_eq!(meta.inline_math_status.as_deref(), Some("preserved"));
+        assert!(meta
+            .translated_text
+            .as_deref()
+            .unwrap()
+            .contains("[[TRANSPAPER_INLINE_MATH_0001]]"));
+    }
+
+    #[test]
+    fn broken_inline_math_placeholder_falls_back_to_source() {
+        let mut meta = protected_meta();
+        store_translation_result(&mut meta, "形状は H x W です".to_string());
+
+        assert_eq!(meta.inline_math_status.as_deref(), Some("fallback_source"));
+        assert_eq!(
+            meta.translated_text.as_deref(),
+            Some("shape [[TRANSPAPER_INLINE_MATH_0001]]")
+        );
+        assert_eq!(meta.translation_warnings.as_ref().map(Vec::len), Some(1));
+    }
 }

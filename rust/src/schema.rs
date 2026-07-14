@@ -3,6 +3,26 @@ use serde::{Deserialize, Serialize};
 pub type NumericBBox = (f64, f64, f64, f64);
 pub type FontCount = (String, usize);
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct InlineMath {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub placeholder: String,
+    #[serde(default)]
+    pub text: String,
+    #[serde(default)]
+    pub bbox: NumericBBox,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub baseline: Option<f64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fonts: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub font_size: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line_index: Option<usize>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PageSize {
     pub width: f64,
@@ -33,6 +53,12 @@ pub struct TextBlockMeta {
     pub confidence: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub translated_text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inline_math: Option<Vec<InlineMath>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inline_math_status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub translation_warnings: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -84,6 +110,12 @@ pub struct TranslationSegment {
     pub avg_font_size: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub translated_text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inline_math: Option<Vec<InlineMath>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inline_math_status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub translation_warnings: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

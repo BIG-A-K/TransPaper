@@ -133,3 +133,19 @@ out/
 ```
 
 `document_translation.json` は `common/compose.compose_pdf` が受け取る形式であり、後段の PDF 再組版処理でそのまま利用できます。
+
+## 文中数式プレースホルダー
+
+`common.seg` が検出した文中数式は、翻訳入力では `[[TRANSPAPER_INLINE_MATH_0001]]` のようなプレースホルダーになっています。DeepL・idx・Ollamaのすべての経路で同じ保護済みテキストを渡します。Ollamaにはプレースホルダーを1文字も変更せず、同じ位置に1回だけ返すよう明示しています。
+
+翻訳結果を保存する際は、各プレースホルダーがちょうど1回残っているか検証します。
+
+- 正常: `inline_math_status` を `preserved` にして訳文を保存
+- 欠落・重複・改変: `inline_math_status` を `fallback_source` にし、プレースホルダーを含む保護済み原文へフォールバック
+- フォールバック時: `translation_warnings` に理由を記録し、composeの警告として参照可能
+
+プレースホルダーの位置を確定できない壊れ方では、誤った位置へ数式を配置するより原文を残すことを優先します。外部TeXレンダラーは使用しません。
+
+`collect_translated_pages()` は `inline_math`、`inline_math_status`、`translation_warnings` を `TranslationSegment` へ伝播します。
+
+Rust版の `rust/src/translate.rs` も同じ検証とフォールバックを行い、Python版と同一の中間JSONを扱えます。

@@ -62,6 +62,9 @@ OLLAMA_TRANSLATE_SYSTEM_PROMPT = (
     "Translate the given English academic paper text into Japanese. "
     "Preserve equations, symbols, citations, references, section numbers, "
     "and inline code exactly as they are. "
+    "Tokens such as [[TRANSPAPER_INLINE_MATH_0001]] and "
+    "[[TRANSPAPER_INLINE_MATH_0002]] are immutable placeholders: "
+    "copy every such token exactly once without changing any character. "
     "Return only the translated Japanese text. "
     "Do not add any explanation, preface, markdown, or formatting."
 )
@@ -80,6 +83,9 @@ OLLAMA_BATCH_SYSTEM_PROMPT = (
     "short English academic paper texts. "
     "Translate each text into Japanese, preserving equations, symbols, citations, "
     "references, section numbers, and inline code exactly as they are. "
+    "Tokens such as [[TRANSPAPER_INLINE_MATH_0001]] and "
+    "[[TRANSPAPER_INLINE_MATH_0002]] are immutable placeholders; "
+    "copy every such token exactly once without changing any character. "
     'Return a JSON object {"translations": ["...", "..."]} with the SAME number '
     "of items in the SAME order. Do not add any explanation."
 )
@@ -296,6 +302,29 @@ def _do_translate(texts: list[str], model_name: str, auth_key: str | None = None
     raise ValueError(f"未知の翻訳モデルです: '{model_name}'")
 
 
+def _store_translation_result(meta: dict, translated: str) -> None:
+    """Store a translation only when all protected inline-math tokens survived."""
+    inline_math = meta.get("inline_math") or []
+    expected = [item.get("placeholder") for item in inline_math if item.get("placeholder")]
+    if not expected:
+        meta["translated_text"] = translated
+        return
+
+    missing = [placeholder for placeholder in expected if translated.count(placeholder) != 1]
+    if not missing:
+        meta["translated_text"] = translated
+        meta["inline_math_status"] = "preserved"
+        return
+
+    # A damaged token cannot be mapped back to a reliable insertion position. Keep
+    # the protected source text instead of emitting raw TeX or silently dropping math.
+    meta["translated_text"] = str(meta.get("text") or translated)
+    meta["inline_math_status"] = "fallback_source"
+    warnings = list(meta.get("translation_warnings") or [])
+    warnings.append("文中数式プレースホルダーが翻訳で壊れたため原文へフォールバックしました")
+    meta["translation_warnings"] = warnings
+
+
 def validate_model_name(model_name: str) -> None:
     """翻訳モデル名が有効か検証する。無効な場合は ValueError を発生させる。
 
@@ -388,7 +417,7 @@ def translate(
 
             # 翻訳結果を各ブロックに割り当て
             for (block, meta, _), translated in zip(batch_buffer, translated_texts):
-                meta["translated_text"] = translated
+                _store_translation_result(meta, translated)
 
             batch_buffer.clear()
             batch_text.clear()
@@ -416,7 +445,7 @@ def translate(
 
                         # 長いテキストは個別に翻訳
                         translated_texts = _do_translate([original_text], model_name, auth_key)
-                        meta["translated_text"] = translated_texts[0]
+                        _store_translation_result(meta, translated_texts[0])
 
             # ページ終了時にバッチを処理
             flush_batch()
@@ -470,7 +499,7 @@ def _translate_ollama_all(
             )
             translated = translate_ollama(texts, model_name)
             for (block, meta, _), t in zip(items, translated):
-                meta["translated_text"] = t
+                _store_translation_result(meta, t)
 
         # ページごとにJSONを保存
         for res in seg_results:
@@ -545,6 +574,15 @@ def collect_translated_pages(translated_dir: Path) -> list[TranslatedPage]:
             avg_font_size = meta.get("avg_font_size")
             if isinstance(avg_font_size, (int, float)):
                 segment["avg_font_size"] = float(avg_font_size)
+            inline_math = meta.get("inline_math")
+            if isinstance(inline_math, list) and inline_math:
+                segment["inline_math"] = inline_math
+                segment["inline_math_status"] = str(
+                    meta.get("inline_math_status") or "unknown"
+                )
+            translation_warnings = meta.get("translation_warnings")
+            if isinstance(translation_warnings, list) and translation_warnings:
+                segment["translation_warnings"] = [str(item) for item in translation_warnings]
             segments.append(segment)
         pages.append(
             {

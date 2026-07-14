@@ -2,13 +2,322 @@ use anyhow::{Context, Result};
 use mupdf::{Colorspace, Matrix};
 use ort::session::Session;
 use ort::value::Tensor;
+use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 
 use crate::model::{self, ModelSource};
-use crate::schema::{PageSize, SegmentBlock, SegmentPage, TextBlockMeta};
+use crate::schema::{InlineMath, PageSize, SegmentBlock, SegmentPage, TextBlockMeta};
 
 const INPUT_SIZE: u32 = 1024;
 const PAD_VALUE: f32 = 114.0 / 255.0;
+const INLINE_MATH_PLACEHOLDER_PREFIX: &str = "[[TRANSPAPER_INLINE_MATH_";
+
+#[derive(Debug, Clone)]
+struct TextRun {
+    text: String,
+    bbox: mupdf::Rect,
+    font: String,
+    size: f32,
+    baseline: f32,
+}
+
+fn is_strong_math_font(font: &str) -> bool {
+    let normalized = font.to_ascii_lowercase().replace(['-', '_', ' '], "");
+    [
+        "cmmi",
+        "cmsy",
+        "cmex",
+        "msam",
+        "msbm",
+        "mathjax",
+        "latinmodernmath",
+        "asanamath",
+        "xitsmath",
+        "mtextra",
+    ]
+    .iter()
+    .any(|needle| normalized.contains(needle))
+        || (normalized.contains("stix") && normalized.contains("math"))
+        || (normalized.contains("texgyre") && normalized.contains("math"))
+}
+
+fn is_math_symbol(ch: char) -> bool {
+    matches!(
+        ch as u32,
+        0x00B1 | 0x00D7 | 0x00F7 | 0x2102 | 0x2113 | 0x2115 | 0x211A | 0x211D
+            | 0x2124
+            | 0x0370..=0x03FF
+            | 0x1D6A8..=0x1D7CB
+            | 0x2190..=0x22FF
+            | 0x2308..=0x230B
+            | 0x27E6..=0x27EF
+    )
+}
+
+fn is_formula_connector(ch: char) -> bool {
+    matches!(
+        ch,
+        '+' | '-'
+            | '='
+            | '*'
+            | '/'
+            | '<'
+            | '>'
+            | '^'
+            | '_'
+            | '|'
+            | '('
+            | ')'
+            | '['
+            | ']'
+            | '{'
+            | '}'
+            | '.'
+            | ','
+            | ':'
+            | '\''
+            | '\u{2032}'
+            | '\u{2033}'
+    )
+}
+
+fn is_formula_context_run(run: &TextRun) -> bool {
+    let text = run.text.trim();
+    if text.is_empty() || text != run.text || text.chars().count() > 8 {
+        return false;
+    }
+    if !text
+        .chars()
+        .all(|ch| ch.is_alphanumeric() || is_math_symbol(ch) || is_formula_connector(ch))
+    {
+        return false;
+    }
+    text.chars()
+        .filter(|ch| ch.is_alphabetic() && !is_math_symbol(*ch))
+        .count()
+        <= 2
+}
+
+fn is_strong_math_run(run: &TextRun) -> bool {
+    if run.text.trim().is_empty() {
+        return false;
+    }
+    is_strong_math_font(&run.font)
+        || (is_formula_context_run(run) && run.text.chars().any(is_math_symbol))
+}
+
+fn runs_are_close(left: &TextRun, right: &TextRun) -> bool {
+    let gap = right.bbox.x0 - left.bbox.x1;
+    gap <= left.size.max(right.size).max(1.0) * 0.45
+}
+
+fn inline_math_groups(runs: &[TextRun]) -> Vec<(usize, usize)> {
+    let strong: Vec<usize> = runs
+        .iter()
+        .enumerate()
+        .filter_map(|(index, run)| is_strong_math_run(run).then_some(index))
+        .collect();
+    if strong.is_empty() {
+        return Vec::new();
+    }
+
+    let mut selected: BTreeSet<usize> = strong.iter().copied().collect();
+    for index in strong {
+        let mut cursor = index;
+        while cursor > 0 {
+            let previous = cursor - 1;
+            if !is_formula_context_run(&runs[previous])
+                || !runs_are_close(&runs[previous], &runs[cursor])
+            {
+                break;
+            }
+            selected.insert(previous);
+            cursor = previous;
+        }
+
+        let mut cursor = index + 1;
+        while cursor < runs.len() {
+            if !is_formula_context_run(&runs[cursor])
+                || !runs_are_close(&runs[cursor - 1], &runs[cursor])
+            {
+                break;
+            }
+            selected.insert(cursor);
+            cursor += 1;
+        }
+    }
+
+    let mut groups = Vec::new();
+    for index in selected {
+        match groups.last_mut() {
+            Some((_, end)) if index == *end + 1 => *end = index,
+            _ => groups.push((index, index)),
+        }
+    }
+    groups
+}
+
+fn union_rect(left: mupdf::Rect, right: mupdf::Rect) -> mupdf::Rect {
+    mupdf::Rect::new(
+        left.x0.min(right.x0),
+        left.y0.min(right.y0),
+        left.x1.max(right.x1),
+        left.y1.max(right.y1),
+    )
+}
+
+fn normalize_extracted_text(text: &str) -> String {
+    text.replace("-\n", "")
+        .replace('\n', " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn extract_text_metadata_from_page(
+    text_page: &mupdf::TextPage,
+    clip: &mupdf::Rect,
+) -> Option<TextBlockMeta> {
+    let mut text_parts = Vec::new();
+    let mut inline_math = Vec::new();
+    let mut all_fonts = Vec::new();
+    let mut all_sizes = Vec::new();
+    let mut math_index = 1usize;
+    let mut line_index = 0usize;
+
+    for block in text_page.blocks() {
+        if !rects_overlap(clip, &block.bounds()) {
+            continue;
+        }
+        for line in block.lines() {
+            if !rects_overlap(clip, &line.bounds()) {
+                continue;
+            }
+            let mut runs: Vec<TextRun> = Vec::new();
+            for ch in line.chars() {
+                let Some(value) = ch.char() else {
+                    continue;
+                };
+                let bbox: mupdf::Rect = ch.quad().into();
+                if !rects_overlap(clip, &bbox) {
+                    continue;
+                }
+                let font = ch
+                    .font()
+                    .map(|font| font.name().to_string())
+                    .unwrap_or_default();
+                let size = ch.size();
+                let baseline = ch.origin().y;
+                let can_merge = runs.last().is_some_and(|run| {
+                    run.font == font
+                        && (run.size - size).abs() <= 0.1
+                        && (run.baseline - baseline).abs() <= size.max(1.0) * 0.15
+                });
+                if can_merge {
+                    let run = runs.last_mut().expect("run exists");
+                    run.text.push(value);
+                    run.bbox = union_rect(run.bbox, bbox);
+                    run.baseline = (run.baseline + baseline) / 2.0;
+                } else {
+                    runs.push(TextRun {
+                        text: value.to_string(),
+                        bbox,
+                        font: font.clone(),
+                        size,
+                        baseline,
+                    });
+                }
+                all_fonts.push(font);
+                all_sizes.push(size as f64);
+            }
+            if runs.is_empty() {
+                continue;
+            }
+
+            let groups = inline_math_groups(&runs);
+            let group_by_start: HashMap<usize, usize> = groups.into_iter().collect();
+            let original_line = runs.iter().map(|run| run.text.as_str()).collect::<String>();
+            let mut line_text = String::new();
+            let mut run_index = 0usize;
+            while run_index < runs.len() {
+                let Some(group_end) = group_by_start.get(&run_index).copied() else {
+                    line_text.push_str(&runs[run_index].text);
+                    run_index += 1;
+                    continue;
+                };
+                let group = &runs[run_index..=group_end];
+                let mut placeholder = format!("{INLINE_MATH_PLACEHOLDER_PREFIX}{math_index:04}]]");
+                while original_line.contains(&placeholder) {
+                    math_index += 1;
+                    placeholder = format!("{INLINE_MATH_PLACEHOLDER_PREFIX}{math_index:04}]]");
+                }
+                let math_bbox = group
+                    .iter()
+                    .skip(1)
+                    .fold(group[0].bbox, |bbox, run| union_rect(bbox, run.bbox));
+                let mut fonts = Vec::new();
+                for run in group {
+                    if !run.font.is_empty() && !fonts.contains(&run.font) {
+                        fonts.push(run.font.clone());
+                    }
+                }
+                inline_math.push(InlineMath {
+                    id: format!("m{math_index:04}"),
+                    placeholder: placeholder.clone(),
+                    text: group.iter().map(|run| run.text.as_str()).collect(),
+                    bbox: (
+                        math_bbox.x0 as f64,
+                        math_bbox.y0 as f64,
+                        math_bbox.x1 as f64,
+                        math_bbox.y1 as f64,
+                    ),
+                    baseline: Some(
+                        group.iter().map(|run| run.baseline as f64).sum::<f64>()
+                            / group.len() as f64,
+                    ),
+                    fonts,
+                    font_size: Some(
+                        group.iter().map(|run| run.size as f64).sum::<f64>() / group.len() as f64,
+                    ),
+                    line_index: Some(line_index),
+                });
+                line_text.push_str(&placeholder);
+                math_index += 1;
+                run_index = group_end + 1;
+            }
+            text_parts.push(line_text);
+            line_index += 1;
+        }
+    }
+
+    let text = normalize_extracted_text(&text_parts.join("\n"));
+    if text.is_empty() {
+        return None;
+    }
+    let mut display_text = text.clone();
+    for math in &inline_math {
+        display_text = display_text.replace(&math.placeholder, &math.text);
+    }
+    let mut font_counts: HashMap<String, usize> = HashMap::new();
+    for font in all_fonts.into_iter().filter(|font| !font.is_empty()) {
+        *font_counts.entry(font).or_default() += 1;
+    }
+    let mut fonts_top: Vec<_> = font_counts.into_iter().collect();
+    fonts_top.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    fonts_top.truncate(3);
+
+    Some(TextBlockMeta {
+        text_preview: Some(text.chars().take(200).collect()),
+        char_count: Some(display_text.chars().count()),
+        avg_font_size: (!all_sizes.is_empty())
+            .then(|| all_sizes.iter().sum::<f64>() / all_sizes.len() as f64),
+        fonts_top: (!fonts_top.is_empty()).then_some(fonts_top),
+        inline_math_status: (!inline_math.is_empty()).then(|| "protected".to_string()),
+        inline_math: (!inline_math.is_empty()).then_some(inline_math),
+        text: Some(text),
+        ..Default::default()
+    })
+}
 
 const DOC_LAYOUT_CAPTION_CLASSES: &[&str] = &[
     "caption",
@@ -57,19 +366,19 @@ const DEFAULT_CLASS_NAMES: &[&str] = &[
 fn map_doclayout_label(label: &str) -> &'static str {
     let normalized = label.trim().to_lowercase().replace(' ', "_");
     let n = normalized.as_str();
-    if DOC_LAYOUT_CAPTION_CLASSES.iter().any(|&c| c == n) {
+    if DOC_LAYOUT_CAPTION_CLASSES.contains(&n) {
         return "caption";
     }
-    if DOC_LAYOUT_TABLE_CLASSES.iter().any(|&c| c == n) {
+    if DOC_LAYOUT_TABLE_CLASSES.contains(&n) {
         return "table";
     }
-    if DOC_LAYOUT_IMAGE_CLASSES.iter().any(|&c| c == n) {
+    if DOC_LAYOUT_IMAGE_CLASSES.contains(&n) {
         return "image";
     }
-    if DOC_LAYOUT_MATH_CLASSES.iter().any(|&c| c == n) {
+    if DOC_LAYOUT_MATH_CLASSES.contains(&n) {
         return "math";
     }
-    if DOC_LAYOUT_TEXT_CLASSES.iter().any(|&c| c == n) {
+    if DOC_LAYOUT_TEXT_CLASSES.contains(&n) {
         return "text";
     }
     "math"
@@ -186,8 +495,8 @@ pub fn run_onnx_inference(
     let class_names = parse_class_names(session);
     tracing::info!("Class names: {:?}", class_names);
 
-    let img = image::open(image_path)
-        .with_context(|| format!("Failed to open image: {image_path:?}"))?;
+    let img =
+        image::open(image_path).with_context(|| format!("Failed to open image: {image_path:?}"))?;
 
     let preprocess = preprocess_image(&img);
 
@@ -230,8 +539,15 @@ pub fn run_onnx_inference(
             let y2 = output_data[base + 3];
             let class_id = output_data[base + 5] as usize;
 
-            let (bx1, by1, bx2, by2) =
-                scale_box(x1, y1, x2, y2, preprocess.gain, preprocess.pad_w, preprocess.pad_h);
+            let (bx1, by1, bx2, by2) = scale_box(
+                x1,
+                y1,
+                x2,
+                y2,
+                preprocess.gain,
+                preprocess.pad_w,
+                preprocess.pad_h,
+            );
 
             let area = (bx2 - bx1) * (by2 - by1);
             if area <= 0.01 {
@@ -366,8 +682,13 @@ pub fn segment_pdf(
                 fallback_segment_page(page_number, page_size)
             }
             Some(session) => {
-                match run_onnx_inference(session, &png_path, page_number, page_size.clone(), conf_threshold)
-                {
+                match run_onnx_inference(
+                    session,
+                    &png_path,
+                    page_number,
+                    page_size.clone(),
+                    conf_threshold,
+                ) {
                     Ok(mut sp) => {
                         // Convert bboxes from image pixel space to PDF point space
                         let scale = 1.0 / zoom as f64;
@@ -419,8 +740,10 @@ pub fn extract_text_metadata(
             .load_page(page_index as i32)
             .context("Failed to load page")?;
 
-        let words = match page.words(mupdf::TextExtractOptions::default()) {
-            Ok(w) => w,
+        let text_page = match page.to_text_page(
+            mupdf::TextPageFlags::PRESERVE_SPANS | mupdf::TextPageFlags::PRESERVE_WHITESPACE,
+        ) {
+            Ok(text_page) => text_page,
             Err(_) => continue,
         };
 
@@ -431,36 +754,13 @@ pub fn extract_text_metadata(
             let (x0, y0, x1, y1) = block.bbox;
             let rect = mupdf::Rect::new(x0 as f32, y0 as f32, x1 as f32, y1 as f32);
 
-            let mut text_parts = Vec::new();
-            let mut font_sizes = Vec::new();
-            for word in &words {
-                let wr = word.bounds;
-                if rects_overlap(&rect, &wr) {
-                    text_parts.push(word.text.clone());
-                    let h = (wr.y1 - wr.y0) as f64;
-                    if h > 0.0 {
-                        font_sizes.push(h);
-                    }
-                }
-            }
-
-            let text = text_parts.join(" ");
-            if text.is_empty() {
-                continue;
-            }
-
-            let meta = block.meta.get_or_insert_with(TextBlockMeta::default);
-            let preview = if text.chars().count() > 200 {
-                text.chars().take(200).collect::<String>()
-            } else {
-                text.clone()
-            };
-            meta.char_count = Some(text.chars().count());
-            meta.text_preview = Some(preview);
-            meta.text = Some(text);
-            if !font_sizes.is_empty() {
-                meta.avg_font_size =
-                    Some(font_sizes.iter().sum::<f64>() / font_sizes.len() as f64);
+            if let Some(extracted) = extract_text_metadata_from_page(&text_page, &rect) {
+                let meta = block.meta.get_or_insert_with(TextBlockMeta::default);
+                let doclayout_label = meta.doclayout_label.clone();
+                let confidence = meta.confidence;
+                *meta = extracted;
+                meta.doclayout_label = doclayout_label;
+                meta.confidence = confidence;
             }
         }
     }
@@ -469,4 +769,45 @@ pub fn extract_text_metadata(
 
 fn rects_overlap(a: &mupdf::Rect, b: &mupdf::Rect) -> bool {
     a.x0 < b.x1 && a.x1 > b.x0 && a.y0 < b.y1 && a.y1 > b.y0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn run(text: &str, font: &str, x0: f32, x1: f32) -> TextRun {
+        TextRun {
+            text: text.to_string(),
+            bbox: mupdf::Rect::new(x0, 10.0, x1, 22.0),
+            font: font.to_string(),
+            size: 10.0,
+            baseline: 20.0,
+        }
+    }
+
+    #[test]
+    fn math_font_and_symbol_form_one_inline_group() {
+        let runs = vec![
+            run("The shape is ", "Times-Roman", 10.0, 70.0),
+            run("H", "CMR10", 70.0, 77.0),
+            run("×", "CMSY10", 77.0, 84.0),
+            run("W", "CMMI10", 84.0, 92.0),
+            run(" pixels.", "Times-Roman", 92.0, 130.0),
+        ];
+
+        assert_eq!(inline_math_groups(&runs), vec![(1, 3)]);
+    }
+
+    #[test]
+    fn symbol_inside_long_normal_prose_is_not_math() {
+        let prose = run(
+            "The process A → B is described below.",
+            "Times-Roman",
+            10.0,
+            190.0,
+        );
+
+        assert!(!is_strong_math_run(&prose));
+        assert!(inline_math_groups(&[prose]).is_empty());
+    }
 }
