@@ -26,7 +26,7 @@ struct Cli {
         short,
         long,
         default_value = "deepl",
-        help = "Translation model (deepl, idx, ollama:<model>)"
+        help = "Translation model (deepl, idx, ollama:<model>, cc:<model>/oc:<model>/cx:<model> agent CLIs)"
     )]
     model: String,
 

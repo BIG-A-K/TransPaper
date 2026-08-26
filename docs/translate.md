@@ -1,6 +1,6 @@
 # 翻訳モジュール（`common/translate.py`）
 
-`common/translate.py` は翻訳バックエンドを統一した関数インターフェースで提供し、`main.py` から呼び出してセグメント化済みの PDF を翻訳します。現在は DeepL API、Ollama経由のローカルLLM（Gemma系など）、Hugging Face/MarianMT モデルに対応しています。
+`common/translate.py` は翻訳バックエンドを統一した関数インターフェースで提供し、`main.py` から呼び出してセグメント化済みの PDF を翻訳します。現在は DeepL API、Ollama経由のローカルLLM（Gemma系など）、コーディングエージェントCLI（Claude Code / opencode / codex）経由のLLM、Hugging Face/MarianMT モデルに対応しています。
 
 
 実行すると以下のステップを踏みます。
@@ -117,6 +117,60 @@ TRANSPAPER_NUM_WORKERS=8 uv run main.py --input hoge.pdf --model ollama:gemma3:4
 - **サーバー未起動時**: 接続エラー時に `ollama serve` を促すメッセージを出します。
 - Docker開発環境からホストのOllamaを叩く場合は `OLLAMA_HOST=http://host.docker.internal:11434` を指定してください。
 
+## コーディングエージェントCLI経由で翻訳する
+
+claude code / opencode / codex の各CLIを非対話モードでsubprocess起動し、その裏で動くLLMに翻訳させます。各CLIの認証（サブスク/APIキー）がそのまま使えるため、追加のAPIキーが不要です。
+
+### モデル指定
+
+`--model <prefix>:<agentモデル名>` 形式で指定します。プレフィックスとCLIの対応は以下の通りです。
+
+| プレフィックス | CLI | モデル名の例 |
+| --- | --- | --- |
+| `cc:` | Claude Code (`claude -p`) | `sonnet`, `opus`, `claude-sonnet-4-5` |
+| `oc:` | opencode (`opencode run`) | `zai-coding-plan/glm-5.2` |
+| `cx:` | codex (`codex exec`) | `gpt-5.1` |
+
+```sh
+uv run main.py --input hoge.pdf --model oc:zai-coding-plan/glm-5.2
+uv run main.py --input hoge.pdf --model cc:sonnet
+uv run main.py --input hoge.pdf --model cx:gpt-5.1
+```
+
+Rust版も同じ指定が使えます。
+
+```sh
+./rust/target/release/transpaper --input hoge.pdf --model oc:zai-coding-plan/glm-5.2
+```
+
+モデル名（コロン以降）はそのまま各CLIのモデル指定フラグ（`--model` / `-m`）へ渡されます。有効なモデル名は各CLI側の設定・契約に依存します。
+
+論文1本で数百セグメントを消費するため、コストと速度の観点から軽量モデルを推奨します。
+
+| エージェント | 推奨モデル（軽量） | 備考 |
+|---|---|---|
+| `cc:` | `haiku` | 高速・低コスト |
+| `oc:` | `zai-coding-plan/glm-5-turbo` | 高速・低コスト |
+| `cx:` | 各契約の軽量モデル | OpenAI側の最小モデルを指定 |
+
+### 仕組み
+
+- **非対話起動**: `claude -p <prompt> --model <model>`、`opencode run <prompt> --model <model>`、`codex exec <prompt> -m <model> -s read-only` をsubprocessで実行します。codexはシェルを実行しない翻訳タスクのためread-onlyサンドボックスで起動し、`-o <file>` で最終メッセージをファイル経由で受け取ります。
+- **ツール不使用の指示**: コーディングエージェントは勝手にツールを呼ぼうとするため、プロンプトで「ツール・ファイル操作・シェルを使わず翻訳のみを出力する」と明示しています。
+- **バッチプロンプト化と並列実行**: Ollamaと同じ戦略（`_plan_ollama_jobs` + `_run_batched_jobs`）で、短いテキストを1プロンプトに束ねてリクエスト数を削減し、ThreadPoolExecutorで並列起動します。ワーカー数は `TRANSPAPER_NUM_WORKERS` で変更できます。
+- **件数・順序の保証**: 構造化出力が使えないため、応答からJSONを寛容に抽出（```jsonフェンスや前置きの文章に対応）し、件数が不一致なら1テキストずつ再翻訳してフォールバックします。
+
+### タイムアウト
+
+1リクエストあたりのタイムアウトは既定600秒。コーディングエージェントは起動が重い（数秒〜）うえに思考に時間がかかることがあるため、Ollamaより長めに設定されています。環境変数 `TRANSPAPER_AGENT_TIMEOUT`（秒）で変更できます。
+
+### 注意点
+
+- **遅さ・コスト**: 1リクエストのレイテンシとトークン単価が高いです。バッチ化と並列化で緩和されますが、論文1本で数百セグメント消費します。各CLIの契約・レート制限に注意してください。
+- **CLI未導入時**: 対応するコマンドがPATH上にない場合、インストールを促すエラーを出します。
+- **作業ディレクトリ**: 各CLIはカレントディレクトリで起動されます。各CLIが読み込む設定（`~/.claude` / `~/.config/opencode` / `~/.codex`）がそのまま使われます。
+- **Rust版の差分**: Rust版も同じバッチ化・並列実行・フォールバック・タイムアウト（`TRANSPAPER_AGENT_TIMEOUT`）を実装しています。ワーカー数は `OLLAMA_NUM_WORKERS` で指定します（`TRANSPAPER_NUM_WORKERS` はPython版のみ）。
+
 ## 出力ディレクトリ構造
 
 ```
@@ -148,4 +202,4 @@ out/
 
 `collect_translated_pages()` は `inline_math`、`inline_math_status`、`translation_warnings` を `TranslationSegment` へ伝播します。
 
-Rust版の `rust/src/translate.rs` も同じ検証とフォールバックを行い、Python版と同一の中間JSONを扱えます。
+Rust版の `rust/src/translate.rs` も同じ検証とフォールバックを行い、Python版と同一の中間JSONを扱えます。コーディングエージェント経由の翻訳（cc:/oc:/cx:）もPython版と同じプロンプト・バッチ化・フォールバックを実装しています。

@@ -34,6 +34,9 @@ DEEPL_API={DEEPL_APIの鍵} ./rust/target/release/transpaper --input hoge.pdf --
 # 翻訳なしテスト（idxモデル）
 ./rust/target/release/transpaper --input hoge.pdf --model idx
 
+# コーディングエージェント経由の翻訳（Python版と同じ指定）
+./rust/target/release/transpaper --input hoge.pdf --model oc:zai-coding-plan/glm-5.2
+
 # 比較PDF作成
 DEEPL_API={DEEPL_APIの鍵} ./rust/target/release/transpaper --input hoge.pdf --compare
 ```
@@ -47,6 +50,15 @@ DEEPL_API={DEEPL_APIの鍵} uv run main.py --input hoge.pdf (--output translated
 ```
 
 `-m,--model`オプションで、使いたいモデルの変更ができるようにしてあります。
+
+- `deepl`: DeepL API（`DEEPL_API`環境変数が必要）
+- `idx`: 翻訳なしテスト用
+- `ollama:<model>`: Ollama経由のローカルLLM（例: `ollama:gemma3:4b`）
+- `cc:<model>`: Claude Code経由（例: `cc:sonnet`）
+- `oc:<model>`: opencode経由（例: `oc:zai-coding-plan/glm-5.2`）
+- `cx:<model>`: codex経由（例: `cx:gpt-5.1`）
+
+コーディングエージェント経由の翻訳は各CLIの認証をそのまま使います（詳細は`docs/translate.md`）。
 
 ### 比較PDF作成
 元のPDFと翻訳後のPDFを見開きで比較したい場合は、`--compare`または`-c`オプションを使用してください：

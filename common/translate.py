@@ -1,8 +1,14 @@
-# 2つの翻訳方法
+# 翻訳方法
 # 1. DeepL API
 # 2. HuggingFaceの翻訳モデル
+# 3. Ollama経由のローカルLLM
+# 4. コーディングエージェントCLI (cc:/oc:/cx:) 経由のLLM
 import json
 import os
+import re
+import shutil
+import subprocess
+import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -53,7 +59,8 @@ def translate_huggingface(texts: list[str], model_name="staka/fugumt-en-ja") -> 
     # TODO: 実装 (MarianMT等)
     raise NotImplementedError(
         f"HuggingFace翻訳は未実装です (model_name={model_name})。"
-        " 現在は 'deepl', 'idx', 'ollama:<model>' が利用可能です。"
+        " 現在は 'deepl', 'idx', 'ollama:<model>', 'cc:<model>', 'oc:<model>', "
+        "'cx:<model>' が利用可能です。"
     )
 
 
@@ -127,28 +134,13 @@ def translate_ollama(
     if num_workers is None:
         num_workers = _default_num_workers()
 
-    # 短いテキストを束ねた「ジョブ」群に分割（順序のインデックスを保持）
-    jobs = _plan_ollama_jobs(texts)
-    results: list[str | None] = [None] * len(texts)
+    def one(text: str) -> str:
+        return _ollama_chat_one(text, ollama_model, url)
 
-    def run_job(job):
-        slice_texts, indices = job
-        if len(slice_texts) == 1:
-            results[indices[0]] = _ollama_chat_one(slice_texts[0], ollama_model, url)
-        else:
-            outs = _ollama_chat_batch(slice_texts, ollama_model, url)
-            for i, t in zip(indices, outs):
-                results[i] = t
+    def batch(slice_texts: list[str]) -> list[str]:
+        return _ollama_chat_batch(slice_texts, ollama_model, url)
 
-    if len(jobs) == 1:
-        run_job(jobs[0])
-    else:
-        workers = min(num_workers, len(jobs))
-        with ThreadPoolExecutor(max_workers=workers) as ex:
-            list(tqdm(ex.map(run_job, jobs), total=len(jobs), desc="Ollama jobs"))
-
-    # フォールバック: 欠損があれば空文字で埋める
-    return [r if r is not None else "" for r in results]
+    return _run_batched_jobs(texts, one, batch, desc="Ollama jobs", num_workers=num_workers)
 
 
 def _plan_ollama_jobs(
@@ -159,6 +151,8 @@ def _plan_ollama_jobs(
     長いテキスト（OLLAMA_BATCH_CHAR_THRESHOLD 超）は1テキスト1ジョブ。
     短いテキストは OLLAMA_BATCH_MAX_ITEMS / OLLAMA_BATCH_MAX_CHARS の上限内で
     1つのバッチジョブに貪欲に束ねる。元の順序のインデックスを各ジョブに保持する。
+
+    Ollama でもコーディングエージェント (cc:/oc:/cx:) でも同じ分割戦略を使う。
     """
     jobs: list[tuple[list[str], list[int]]] = []
     batch_texts: list[str] = []
@@ -188,6 +182,42 @@ def _plan_ollama_jobs(
         batch_chars += n
     flush()
     return jobs
+
+
+def _run_batched_jobs(
+    texts: list[str],
+    one,
+    batch,
+    desc: str,
+    num_workers: int,
+) -> list[str]:
+    """ジョブ分割＋並列実行の共通基盤（Ollama / コーディングエージェント共用）。
+
+    `one(text) -> str` で1テキスト翻訳、`batch(texts) -> list[str]` で
+    複数テキストを1リクエストで翻訳する関数を受け取る。入力と同じ順序で
+    結果を返す。欠損があった要素は空文字で埋める。
+    """
+    jobs = _plan_ollama_jobs(texts)
+    results: list[str | None] = [None] * len(texts)
+
+    def run_job(job):
+        slice_texts, indices = job
+        if len(slice_texts) == 1:
+            results[indices[0]] = one(slice_texts[0])
+        else:
+            outs = batch(slice_texts)
+            for i, t in zip(indices, outs):
+                results[i] = t
+
+    if len(jobs) == 1:
+        run_job(jobs[0])
+    else:
+        workers = min(num_workers, len(jobs))
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            list(tqdm(ex.map(run_job, jobs), total=len(jobs), desc=desc))
+
+    # フォールバック: 欠損があれば空文字で埋める
+    return [r if r is not None else "" for r in results]
 
 
 def _estimate_num_predict(total_chars: int) -> int:
@@ -289,6 +319,229 @@ def _ollama_chat_batch(texts: list[str], ollama_model: str, url: str) -> list[st
     return [str(x) for x in trans]
 
 
+# --- コーディングエージェントCLI経由の翻訳 (cc:/oc:/cx:) ---
+# claude code / opencode / codex を非対話モードでsubprocess起動し、
+# その裏で動くLLMに翻訳させる。プレフィックスとCLIの対応:
+#   cc: -> claude  (`claude -p <prompt> --model <model>`)
+#   oc: -> opencode (`opencode run <prompt> --model <model>`)
+#   cx: -> codex   (`codex exec <prompt> -m <model> -s read-only`)
+AGENT_BACKENDS: dict[str, dict] = {
+    "cc": {"cli": "claude", "display": "Claude Code"},
+    "oc": {"cli": "opencode", "display": "opencode"},
+    "cx": {"cli": "codex", "display": "codex"},
+}
+
+AGENT_TRANSLATE_SYSTEM_PROMPT = (
+    OLLAMA_TRANSLATE_SYSTEM_PROMPT
+    + " Keep technical terms, proper nouns, product names, URLs, "
+    "and inline code snippets in the original language. "
+    "Aim for natural, fluent Japanese rather than literal word-by-word translation. "
+    "This is a pure translation task: do not use any tools, "
+    "do not read or write files, and do not run shell commands. "
+    "Output only the translated text."
+)
+
+AGENT_BATCH_SYSTEM_PROMPT = (
+    OLLAMA_BATCH_SYSTEM_PROMPT
+    + " Keep technical terms, proper nouns, product names, URLs, "
+    "and inline code snippets in the original language. "
+    "Aim for natural, fluent Japanese rather than literal word-by-word translation. "
+    "This is a pure translation task: do not use any tools, "
+    "do not read or write files, and do not run shell commands. "
+    "Output only the JSON object."
+)
+
+# 1リクエストあたりのタイムアウト秒数（コーディングエージェントは起動・応答が遅い）
+AGENT_TIMEOUT_SEC = 600
+
+
+def _agent_timeout() -> int:
+    """エージェントCLIのタイムアウト秒数。環境変数 TRANSPAPER_AGENT_TIMEOUT で上書き可。"""
+    v = os.getenv("TRANSPAPER_AGENT_TIMEOUT")
+    if v and v.strip().isdigit():
+        return max(1, int(v))
+    return AGENT_TIMEOUT_SEC
+
+
+def _agent_command(
+    agent_key: str,
+    agent_model: str,
+    prompt: str,
+    last_message_file: str | None = None,
+) -> list[str]:
+    """エージェントキー (cc/oc/cx) に対応するCLIのコマンドラインを組み立てる。
+
+    codex はstdoutにログが混ざるため `-o <file>` で最終メッセージをファイルに
+    書き出させる。翻訳でシェルは使わないので read-only サンドボックスで起動する。
+    """
+    if agent_key == "cc":
+        return ["claude", "-p", prompt, "--model", agent_model]
+    if agent_key == "oc":
+        return ["opencode", "run", prompt, "--model", agent_model]
+    if agent_key == "cx":
+        cmd = [
+            "codex",
+            "exec",
+            prompt,
+            "-m",
+            agent_model,
+            "--skip-git-repo-check",
+            "-s",
+            "read-only",
+        ]
+        if last_message_file is not None:
+            cmd += ["-o", last_message_file]
+        return cmd
+    raise ValueError(f"未知のエージェントプレフィックスです: '{agent_key}'")
+
+
+def _run_agent(agent_key: str, agent_model: str, prompt: str) -> str:
+    """エージェントCLIを1回実行して応答テキストを返す。"""
+    backend = AGENT_BACKENDS[agent_key]
+    cli = backend["cli"]
+    if shutil.which(cli) is None:
+        raise RuntimeError(
+            f"'{cli}' コマンドが見つかりません ({backend['display']})。"
+            f" インストールするかPATHを通してください: -m {agent_key}:<model>"
+        )
+
+    # codex は最終メッセージをファイル経由で受け取る
+    out_file: str | None = None
+    if agent_key == "cx":
+        fd, out_file = tempfile.mkstemp(prefix="transpaper_codex_", suffix=".txt")
+        os.close(fd)
+
+    cmd = _agent_command(agent_key, agent_model, prompt, last_message_file=out_file)
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=_agent_timeout(),
+        )
+        if proc.returncode != 0:
+            stderr = (proc.stderr or "").strip()
+            raise RuntimeError(
+                f"{backend['display']} がエラー終了しました (exit={proc.returncode}): {stderr[:500]}"
+            )
+        if out_file is not None:
+            content = Path(out_file).read_text(encoding="utf-8")
+        else:
+            content = proc.stdout
+        return content.strip()
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError(
+            f"{backend['display']} がタイムアウトしました ({_agent_timeout()}秒)。"
+            " TRANSPAPER_AGENT_TIMEOUT で延長できます。"
+        ) from e
+    finally:
+        if out_file is not None and Path(out_file).exists():
+            Path(out_file).unlink()
+
+
+def _extract_json_object(text: str) -> dict | None:
+    """LLM応答からJSONオブジェクトを寛容に取り出す。
+
+    コーディングエージェントは構造化出力を強制できないため、
+    ```json フェンスや前置きの文章が混ざっていてもパースできるようにする。
+    """
+    candidates: list[str] = [text]
+    fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+    if fence:
+        candidates.append(fence.group(1))
+    start, end = text.find("{"), text.rfind("}")
+    if start != -1 and end > start:
+        candidates.append(text[start : end + 1])
+    for candidate in candidates:
+        try:
+            obj = json.loads(candidate)
+            if isinstance(obj, dict):
+                return obj
+        except json.JSONDecodeError:
+            continue
+    return None
+
+
+def _agent_translate_one(text: str, agent_key: str, agent_model: str) -> str:
+    """1テキストをコーディングエージェント経由で翻訳する。"""
+    prompt = (
+        "[Instructions]\n"
+        f"{AGENT_TRANSLATE_SYSTEM_PROMPT}\n\n"
+        "[Text to translate]\n"
+        f"{text}"
+    )
+    return _run_agent(agent_key, agent_model, prompt)
+
+
+def _agent_translate_batch(
+    texts: list[str], agent_key: str, agent_model: str
+) -> list[str]:
+    """複数テキストを1プロンプトに束ねてコーディングエージェント経由で翻訳する。
+
+    構造化出力が使えないため、応答からJSONを抽出して件数・順序を検証する。
+    件数が不一致の場合はフォールバックとして各テキストを個別に翻訳し直す。
+    """
+    payload = json.dumps({"texts": list(texts)}, ensure_ascii=False)
+    prompt = (
+        "[Instructions]\n"
+        f"{AGENT_BATCH_SYSTEM_PROMPT}\n\n"
+        "[Input]\n"
+        f"{payload}"
+    )
+    content = _run_agent(agent_key, agent_model, prompt)
+    obj = _extract_json_object(content)
+    trans = obj.get("translations") if obj else None
+    if not isinstance(trans, list) or len(trans) != len(texts):
+        # 順序・件数が保証されなかったら確実に1テキストずつ翻訳
+        return [_agent_translate_one(t, agent_key, agent_model) for t in texts]
+    return [str(x) for x in trans]
+
+
+def translate_agent(
+    texts: list[str],
+    model_name: str,
+    num_workers: int | None = None,
+) -> list[str]:
+    """コーディングエージェントCLI (cc:/oc:/cx:) 経由でLLM翻訳する。
+
+    `model_name` は `<prefix>:<agentモデル名>` 形式（例: `oc:zai-coding-plan/glm-5.2`）。
+    バッチプロンプト化と並列実行はOllamaと同じ戦略（_run_batched_jobs）を使う。
+
+    Args:
+        texts: 翻訳対象テキストのリスト
+        model_name: `cc:<model>` / `oc:<model>` / `cx:<model>` 形式のモデル指定
+        num_workers: 並列プロセス数。未指定時は _default_num_workers() で自動決定
+
+    Returns:
+        翻訳結果テキストのリスト（入力と同じ順序）
+    """
+    if isinstance(texts, str):
+        texts = [texts]
+    if not texts:
+        return []
+
+    agent_key, _, agent_model = model_name.partition(":")
+    if agent_key not in AGENT_BACKENDS:
+        raise ValueError(f"未知のエージェントプレフィックスです: '{model_name}'")
+    if not agent_model:
+        raise ValueError(
+            f"エージェントのモデル名が空です: '{model_name}'。"
+            f" `{agent_key}:<model>` 形式で指定してください (例: oc:zai-coding-plan/glm-5.2)"
+        )
+
+    if num_workers is None:
+        num_workers = _default_num_workers()
+
+    def one(text: str) -> str:
+        return _agent_translate_one(text, agent_key, agent_model)
+
+    def batch(slice_texts: list[str]) -> list[str]:
+        return _agent_translate_batch(slice_texts, agent_key, agent_model)
+
+    desc = f"{AGENT_BACKENDS[agent_key]['display']} jobs"
+    return _run_batched_jobs(texts, one, batch, desc=desc, num_workers=num_workers)
+
+
 def _do_translate(texts: list[str], model_name: str, auth_key: str | None = None) -> list[str]:
     """model_name に応じて翻訳バックエンドをディスパッチする。"""
     validate_model_name(model_name)
@@ -298,6 +551,8 @@ def _do_translate(texts: list[str], model_name: str, auth_key: str | None = None
         return translate_deepl(texts, target_lang="JA", auth_key=auth_key)
     if model_name.startswith("ollama:"):
         return translate_ollama(texts, model_name=model_name)
+    if model_name.startswith(tuple(f"{k}:" for k in AGENT_BACKENDS)):
+        return translate_agent(texts, model_name=model_name)
     # validate_model_name で弾くのでここには到達しない
     raise ValueError(f"未知の翻訳モデルです: '{model_name}'")
 
@@ -332,6 +587,8 @@ def validate_model_name(model_name: str) -> None:
         - 'deepl'
         - 'idx'
         - 'ollama:<model>' (例: 'ollama:gemma3:4b')
+        - 'cc:<model>' / 'oc:<model>' / 'cx:<model>'
+          (例: 'oc:zai-coding-plan/glm-5.2', 'cc:sonnet', 'cx:gpt-5.1')
     """
     if model_name in ("idx", "deepl"):
         return
@@ -343,9 +600,19 @@ def validate_model_name(model_name: str) -> None:
                 " `ollama:<model>` 形式で指定してください (例: ollama:gemma3:4b)"
             )
         return
+    agent_key, _, agent_model = model_name.partition(":")
+    if agent_key in AGENT_BACKENDS:
+        if not agent_model:
+            raise ValueError(
+                f"エージェントのモデル名が空です: '{model_name}'。"
+                f" `{agent_key}:<model>` 形式で指定してください"
+                " (例: oc:zai-coding-plan/glm-5.2, cc:sonnet, cx:gpt-5.1)"
+            )
+        return
     raise ValueError(
         f"未知の翻訳モデルです: '{model_name}'。"
-        " 指定可能: 'deepl', 'idx', 'ollama:<model>' (例: ollama:gemma3:4b)"
+        " 指定可能: 'deepl', 'idx', 'ollama:<model>', 'cc:<model>' (Claude Code), "
+        "'oc:<model>' (opencode), 'cx:<model>' (codex)"
     )
 
 
@@ -381,7 +648,8 @@ def translate(
     Args:
         seg_results: セグメント分割結果のリスト
         model_name: 翻訳モデル名
-            ('deepl', 'idx', 'ollama:<model>' または HuggingFaceモデル名)
+            ('deepl', 'idx', 'ollama:<model>', 'cc:<model>', 'oc:<model>',
+            'cx:<model>' または HuggingFaceモデル名)
         out_dir: 出力ディレクトリ
         auth_key: DeepL APIキー (deepl利用時)
         batch_threshold: この単語数未満のテキストをバッチ処理する (デフォルト: 50)
@@ -392,13 +660,20 @@ def translate(
         print(f"ERROR: {e}")
         return False
 
+    agent_key = model_name.partition(":")[0]
     if model_name == "deepl":
         print("Using DeepL for translation.")
     elif model_name == "idx":
         print("Using idx (no translation) for translation.")
     elif model_name.startswith("ollama:"):
         print(f"Using Ollama model '{model_name.split(':', 1)[1]}' for translation.")
-        return _translate_ollama_all(seg_results, model_name, out_dir)
+        return _translate_llm_all(seg_results, model_name, out_dir, translate_ollama)
+    elif agent_key in AGENT_BACKENDS:
+        print(
+            f"Using {AGENT_BACKENDS[agent_key]['display']} "
+            f"model '{model_name.split(':', 1)[1]}' for translation."
+        )
+        return _translate_llm_all(seg_results, model_name, out_dir, translate_agent)
     try:
         word_count = 0
         if not Path(out_dir).exists():
@@ -462,15 +737,16 @@ def translate(
         return False
 
 
-def _translate_ollama_all(
+def _translate_llm_all(
     seg_results: list[SegmentPage],
     model_name: str,
     out_dir: str,
+    translate_fn,
 ) -> bool:
-    """Ollama 用の全テキスト一括収集モード。
+    """LLM系バックエンド（Ollama / コーディングエージェント）用の全テキスト一括収集モード。
 
     バッチプロンプト化と並列実行を最大限に活かすため、ページをまたいで
-    全テキストを一度収集してから translate_ollama() に渡し、結果を各ブロックの
+    全テキストを一度収集してから translate_fn() に渡し、結果を各ブロックの
     meta["translated_text"] へ順序通りに書き戻す。
     """
     try:
@@ -497,7 +773,7 @@ def _translate_ollama_all(
             print(
                 f"Translating {len(texts)} segments ({word_count} words) with {workers} workers..."
             )
-            translated = translate_ollama(texts, model_name)
+            translated = translate_fn(texts, model_name)
             for (block, meta, _), t in zip(items, translated):
                 _store_translation_result(meta, t)
 
